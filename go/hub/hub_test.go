@@ -1229,6 +1229,9 @@ func TestGrantNameUniquePerPrincipal(t *testing.T) {
 	// Another principal may use the name; after a revoke alice may reuse it.
 	e.mustSubmit(grantTok(e, carol, scout, "scout", nil))
 	e.mustSubmit(e.tok(alice, "revoke", map[string]any{"target": gid}))
+	// A new token: the byte-identical one refused above is remembered and
+	// would get the same refusal for the freshness window.
+	e.advance(time.Millisecond)
 	e.mustSubmit(grantTok(e, alice, dave, "scout", nil))
 }
 

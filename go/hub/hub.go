@@ -59,11 +59,19 @@ type Config struct {
 
 // Hub is an http.Handler serving the §8 API.
 type Hub struct {
-	cfg   Config
-	mux   *http.ServeMux
-	mu    sync.Mutex // serialises submissions: check-then-apply must not interleave
-	keyRL *limiter
-	ipRL  *limiter
+	cfg Config
+	// rejected remembers, for the freshness window, every token id that was
+	// charged to its signer's key and then refused, with the refusal. A
+	// repeat gets the same answer without a second charge, so each token
+	// costs its signer at most once however often a third party replays it.
+	// Guarded by mu. In memory only: a restart forgets it, which is safe
+	// (it can only cost each token one more charge).
+	rejected  map[string]rejection
+	nextPrune int64
+	mux       *http.ServeMux
+	mu        sync.Mutex // serialises submissions: check-then-apply must not interleave
+	keyRL     *limiter
+	ipRL      *limiter
 }
 
 // New returns a Hub. Rate limits are always on: a zero Limit means the default.
@@ -231,15 +239,34 @@ func (h *Hub) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
 
+// rejection is a remembered refusal of a charged token.
+type rejection struct {
+	err *hubErr
+	ts  int64 // the token's ts; once outside the window it is stale anyway
+}
+
 func (h *Hub) submit(ctx context.Context, token string) (string, error) {
 	obj, herr := verify(token)
 	if herr != nil {
 		return "", herr
 	}
+	// Stateless refusal first, so it never reaches the key charge.
+	if obj.Type == "auth" {
+		return "", forbidden("auth tokens are never submitted (§6.4)")
+	}
 	now := h.nowMS()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if now >= h.nextPrune {
+		for id, rj := range h.rejected {
+			if rj.ts < now-submitWindowMS {
+				delete(h.rejected, id)
+			}
+		}
+		h.nextPrune = now + 10_000
+	}
+	charged := false
 	err := h.cfg.Store.Tx(ctx, func(ops Ops) error {
 		// Order matters (§5). A stored id is answered first, so a late retry
 		// of an accepted object still gets its original result; then
@@ -253,15 +280,19 @@ func (h *Hub) submit(ctx context.Context, token string) (string, error) {
 		if absDiff(obj.Fields["ts"].(int64), now) > submitWindowMS {
 			return badRequest(EStale, "ts outside ±300 s of hub time")
 		}
-		// Only a fresh, never-stored token reaches here, so only its signer
-		// can have produced it: the per-key limit is charged now, before
-		// every remaining check, and forbidden submissions still pay.
+		// A fresh token may still be a replay: anyone holding it (another
+		// hub's operator, a reader of a channel) can resend it within the
+		// window. What is true here is that this id has not been charged
+		// before: stored ids returned above, and charged-then-refused ids
+		// are answered from memory. So the key is charged once per token,
+		// and forbidden fresh submissions still pay that once.
+		if rj, ok := h.rejected[obj.ID]; ok {
+			return rj.err
+		}
 		if !h.keyRL.allow(now, obj.From) {
 			return &hubErr{http.StatusTooManyRequests, ERate, "rate limit exceeded (signer key)"}
 		}
-		if obj.Type == "auth" {
-			return forbidden("auth tokens are never submitted (§6.4)")
-		}
+		charged = true
 		if err := sweepExpired(ops, now); err != nil {
 			return err
 		}
@@ -281,6 +312,13 @@ func (h *Hub) submit(ctx context.Context, token string) (string, error) {
 		return apply()
 	})
 	if err != nil {
+		var he *hubErr
+		if charged && errors.As(err, &he) && he.status < 500 {
+			if h.rejected == nil {
+				h.rejected = map[string]rejection{}
+			}
+			h.rejected[obj.ID] = rejection{he, obj.Fields["ts"].(int64)}
+		}
 		return "", err
 	}
 	return obj.ID, nil

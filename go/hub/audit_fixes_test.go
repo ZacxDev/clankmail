@@ -124,10 +124,61 @@ func TestReplayCannotDrainVictimKeyLimit(t *testing.T) {
 		wantOK(t, replay(handle))
 		wantErr(t, replay(stale), 400, EStale)
 	}
+	// 70 DISTINCT stale tokens (old ones a third party collected): remembering
+	// refusals bounds each to one charge, so only checking freshness before
+	// the charge keeps these free.
+	for i := 0; i < 70; i++ {
+		old := e.tokAt(alice, -10*time.Minute, "msg", map[string]any{"to": []any{cid}, "body": fmt.Sprint("old ", i)})
+		wantErr(t, replay(old), 400, EStale)
+	}
 	// 210 replays later, alice's next fresh post is accepted.
 	r := e.submit(e.tok(alice, "msg", map[string]any{"to": []any{cid}, "body": "still mine"}))
 	if r.status != 200 {
 		t.Fatalf("victim's fresh post after 210 replays: want 200, got %d %v", r.status, r.body)
+	}
+}
+
+// Round 3 🟡: a fresh token that was refused is never stored, so it stays
+// replayable for the window. Each token may cost its signer at most once:
+// replays of a remembered refusal get the same answer without a charge, and
+// an auth token sent to submit is refused before the charge.
+func TestRejectedReplayCannotDrainVictimKeyLimit(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} })
+	// Tokens another hub's operator could hold: a handle naming that hub,
+	// and an auth header alice sent there.
+	foreign := e.tok(alice, "handle", map[string]any{"name": "alice", "hub": "other.example"})
+	auth := strings.TrimPrefix(e.authFor(alice, 0, "GET", "/v1/inbox?queue=inbox", nil,
+		map[string]any{"hub": "other.example"}), "ClankMail ")
+	replay := func(tok string) resp {
+		req, _ := http.NewRequest("POST", e.srv.URL+"/v1/submit", strings.NewReader(tok))
+		req.Header.Set("X-Forwarded-For", "203.0.113.77") // the replayer's address
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		out := resp{status: res.StatusCode}
+		json.NewDecoder(res.Body).Decode(&out.body)
+		return out
+	}
+	for i := 0; i < 70; i++ { // each count alone exceeds the 60-token burst
+		r := replay(foreign)
+		wantErr(t, r, 403, EForbidden)
+		if !strings.Contains(r.str("detail"), "handle is for hub other.example") {
+			t.Fatalf("replay %d answered differently: %v", i, r.body)
+		}
+		wantErr(t, replay(auth), 403, EForbidden)
+	}
+	// 70 DISTINCT auth tokens: remembering refusals bounds each token to one
+	// charge, so only refusing t=auth before the charge keeps these free.
+	for i := 0; i < 70; i++ {
+		tok := strings.TrimPrefix(e.authFor(alice, 0, "GET", "/v1/inbox?queue=inbox", nil,
+			map[string]any{"hub": "other.example"}), "ClankMail ")
+		wantErr(t, replay(tok), 403, EForbidden)
+	}
+	r := e.submit(e.dm(alice, "still mine", bob))
+	if r.status != 200 {
+		t.Fatalf("victim's fresh DM after 210 replays of refused tokens: want 200, got %d %v", r.status, r.body)
 	}
 }
 
