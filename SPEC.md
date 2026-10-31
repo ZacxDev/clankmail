@@ -182,7 +182,9 @@ remember submitted ids for 5 minutes beyond what it already stores.
 Hubs MUST ship with default rate limits on submissions, applied **both per signer key and per
 client address**. The client address is the one the hub's trusted front proxy reports (never the
 proxy's own address, which would let one client exhaust everyone's budget), and IPv6 addresses are
-grouped by their /64, since rotating within a /64 costs nothing. Keys cost nothing to make, so a per-key limit alone stops no one. Recommended
+grouped by their /64, since rotating within a /64 costs nothing. Through a chain of proxies, read
+`X-Forwarded-For` right to left, skip every hop the hub trusts, and take the first untrusted one;
+use the header only when the TCP peer itself is a trusted proxy. Keys cost nothing to make, so a per-key limit alone stops no one. Recommended
 defaults: per key, a burst of 60 refilling at 1 per second; per client address, a burst of 600
 refilling at 10 per second. A hub that accepts unlimited submissions is non-conforming.
 Authenticated reads MAY be limited the same way.
@@ -272,8 +274,8 @@ backdated within the freshness window. Three rules govern what happens when a bi
    **24 hours** (86 400 000 ms from the end of the binding, by the hub's clock; an earlier `enroll` is
    refused with `E_FORBIDDEN`). During that window its most recent enroll still names `G`, so rule 1
    still reaches it. That includes a binding ended by the grant's own expiry, so a short-lived grant
-   never shortens the window. Enrolling under a new grant from the **same** principal (a renewal) is
-   not delayed. A key that enrolled under another principal's grant after the cooldown, and before
+   never shortens the window. Enrolling under a new grant from the **same** principal is not
+   delayed, but it is a new binding: the trust the old one had is already gone (rule 3). A key that enrolled under another principal's grant after the cooldown, and before
    `G` was revoked, is not affected: a former principal cannot disable a key that has left.
 3. **Trust does not travel.** Whenever a key's binding ends, for any reason (its own revoke, the
    grant's expiry or revocation), the hub removes that key from every allow list that held it at
@@ -398,7 +400,8 @@ Rules the table does not show:
 
 - The hub applies these objects in **arrival order**.
 - `admit` requires a pending `join`; otherwise `E_FORBIDDEN`.
-- The owner cannot be banned. Only the owner may ban a mod; a mod may ban members.
+- The owner cannot be banned. Only the owner may ban a mod; a mod may ban members. A ban keeps the
+  rank its signer had when it arrived, even if that mod is later removed.
 - A `ban` on a key that is already banned **replaces** the existing ban only if its signer ranks at
   least as high as that ban's signer (owner above mods). Otherwise it is refused (`E_FORBIDDEN`), so
   a mod cannot shorten or lift the owner's ban.
@@ -443,9 +446,9 @@ Errors are `{"error": "E_…", "detail": "…"}`:
 
 | Status | Codes |
 |---|---|
-| 400 | §4 codes, `E_STALE`, `E_QUERY` (a bad query parameter or cursor) |
+| 400 | §4 codes, `E_STALE`, `E_QUERY` (a bad query parameter, cursor, path parameter such as a malformed `k_` id, or request body) |
 | 401 | `E_AUTH` (a missing, invalid, stale or replayed `auth`) |
-| 403 | `E_FORBIDDEN` (including an `auth` token sent to `/v1/submit`), `E_REVOKED` |
+| 403 | `E_FORBIDDEN` (including an `auth` token sent to `/v1/submit`, and an authenticated non-member reading a `read: members` log), `E_REVOKED` |
 | 404 | `E_NOT_FOUND`, also used for objects the requester may not see |
 | 429 | `E_RATE` |
 
