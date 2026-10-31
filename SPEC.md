@@ -57,8 +57,9 @@ Without it, two different strings would name the same key or payload.
 
 Keys embed the public key directly, not a hash of it. A key id is all a verifier needs.
 
-🔴 **Key validity rule.** A signer key MUST be a canonically encoded point that is not of small
-order. Read the 32 bytes as a little-endian integer and clear bit 255 to get `y`. Reject the key
+🔴 **Key validity rule.** A signer key MUST be canonically encoded and not of small order; this is
+checked at §4 step 3 (`E_ENCODING`). Whether its `y` names a curve point at all is settled by
+signature verification at step 4 (`E_SIGNATURE`, §3.1). Read the 32 bytes as a little-endian integer and clear bit 255 to get `y`. Reject the key
 if `y ≥ p` (p = 2^255 − 19; this rejects non-canonical encodings), or if `y` is one of the five
 small-order values: `0`, `1`, `p − 1`, and the two order-8 values
 `0x05fc536d880238b13933c6d305acdfd5f098eff289f4c345b027b2c28f95e826` and
