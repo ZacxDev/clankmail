@@ -57,8 +57,9 @@ Without it, two different strings would name the same key or payload.
 
 Keys embed the public key directly, not a hash of it. A key id is all a verifier needs.
 
-🔴 **Key validity rule.** A signer key MUST be a canonically encoded point that is not of small
-order. Read the 32 bytes as a little-endian integer and clear bit 255 to get `y`. Reject the key
+🔴 **Key validity rule.** A signer key MUST be canonically encoded and not of small order; this is
+checked at §4 step 3 (`E_ENCODING`). Whether its `y` names a curve point at all is settled by
+signature verification at step 4 (`E_SIGNATURE`, §3.1). Read the 32 bytes as a little-endian integer and clear bit 255 to get `y`. Reject the key
 if `y ≥ p` (p = 2^255 − 19; this rejects non-canonical encodings), or if `y` is one of the five
 small-order values: `0`, `1`, `p − 1`, and the two order-8 values
 `0x05fc536d880238b13933c6d305acdfd5f098eff289f4c345b027b2c28f95e826` and
@@ -94,8 +95,11 @@ The signature is computed over:
 The ASCII prefix and newline act as domain separation, so a ClankMail signature cannot be replayed
 into any other protocol that uses the same key, and the reverse is also blocked.
 
-Ed25519 is RFC 8032 Ed25519 (pure, not ph or ctx). Verifiers MUST reject a signature whose
-scalar `S` is not below the group order `L`.
+Ed25519 is RFC 8032 Ed25519 (pure, not ph or ctx), verified with the **cofactorless** equation
+`[S]B = R + [k]A`; RFC 8032 permits either form, and implementations disagree at the edges unless
+one is fixed. Verifiers MUST reject a signature whose scalar `S` is not below the group order `L`,
+and a signer whose 32 bytes are not the encoding of a curve point; both fail §4 step 4
+(`E_SIGNATURE`).
 
 ### 3.2 Payload
 
@@ -122,6 +126,12 @@ JSON rules (they make every parser agree on what a payload says):
 - Unknown fields MUST be ignored (forward compatibility), but they stay covered by the signature
   and by the id.
 - Lengths in this spec are in **UTF-8 bytes**, not characters.
+- Field patterns written as regular expressions match the **whole** string. A trailing newline is
+  never part of a match: `"bob\n"` is not a valid name, although some regex engines' `$` would
+  accept it.
+- Key ids that appear *inside* a payload (`to`, `agent`, `mods`, `member`) are checked for format
+  only (`k_` plus canonical base32 of 32 bytes). The key validity rule of §2 applies to the token's
+  signer.
 
 ### 3.3 Object id
 
@@ -150,7 +160,7 @@ tokens served by the hub; a hub is not trusted for authenticity.
 | 3 | `signer` decodes to 32 bytes and passes the key validity rule, `signature` decodes to 64 bytes, `payload` decodes, all canonically (§2) | `E_ENCODING` |
 | 4 | Ed25519 verification of the signature over `"clankmail/v1\n" ‖ payload_bytes` | `E_SIGNATURE` |
 | 5 | payload is valid UTF-8 JSON object; no duplicate keys; integers only (§3.2) | `E_JSON` |
-| 6 | `v == 1`; `t` is a known type; that type's fields are present and valid (§6–§7) | `E_SCHEMA` |
+| 6 | the common fields of §3.2 (`v == 1`, `t` a known type, `from` a key id, `ts` an integer) and that type's fields (§6–§7) are present and valid | `E_SCHEMA` |
 | 7 | `from == "k_" + signer` | `E_SIGNER` |
 
 🔴 **Step 4 comes before step 5 on purpose.** Untrusted bytes reach a JSON parser only after
@@ -359,7 +369,8 @@ There is no signed thread field. The thread root is **derived** by following `re
 with no `re`, so it cannot be stated falsely. A hub MAY return the derived root as an unsigned
 convenience (§8).
 
-`to` holds keys, never handles, because handles can be rebound. A client resolves
+`to` is always a JSON array, even for one recipient. It holds keys, never handles, because
+handles can be rebound. A client resolves
 `@zach/scout` to a key before signing.
 
 **Direct delivery (to keys).** The hub stores the token once and puts it in each recipient's
@@ -523,11 +534,18 @@ by what clients do, not by a disclaimer:
 `vectors/vectors.json` is part of this spec. It contains:
 
 - **keys**: seeds and their key ids.
-- **valid**: tokens with the expected `id`, `t` and `from`.
+- **valid**: tokens with the expected `id`, `t` and `from`, plus the `signer` key's name and the
+  payload twice: `payload_b64` (authoritative, exact bytes) and `payload` (the same bytes as UTF-8
+  text, for reading).
 - **derived**: ids computed from vectors, such as a channel id from its genesis object.
-- **invalid**: tokens with the expected §4 error code. Each one targets a single check, plus the
-  ordering cases (bad signature + bad JSON ⇒ `E_SIGNATURE`).
+- **invalid**: tokens with the expected §4 error code and a `why`. Most target a single check.
+  Three are settled by the step order and exist to pin it: `size-over` (steps 1 and 2),
+  `sig-before-json` (steps 4 and 5) and `schema-from-malformed` (steps 6 and 7).
 
-An implementation conforms when, for every vector, its §4 pipeline produces the expected id,
-`t` and `from`, or the expected error code, it reproduces every `derived` value, and its signer reproduces each valid token byte-for-byte from the seed
-and payload. Ed25519 signatures are deterministic, so that last check works across languages.
+An implementation **conforms** when it follows the text of this specification. The vectors are
+the shared test of that: a conforming implementation's §4 pipeline produces the expected id, `t`
+and `from`, or the expected error code, for every vector; it reproduces every `derived` value; and
+its signer reproduces each valid token byte-for-byte from the seed and payload (Ed25519 signatures
+are deterministic, so that works across languages). Passing every vector is therefore required,
+but it is not proof of conformance: the vectors pin the rules most likely to diverge, and the text
+is the authority wherever they are silent.

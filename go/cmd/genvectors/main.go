@@ -123,7 +123,10 @@ func main() {
 	addValid("msg-multi-recipient", scout, hdr("msg", scout)+fmt.Sprintf(`,"to":[%q,%q],"body":"to both"}`, bob.ID, carol.ID))
 	// No canonicalisation: reordered keys + whitespace + an unknown field are valid as sent.
 	addValid("msg-no-canonical-form", bob, fmt.Sprintf("{\n  \"body\": \"order and spacing are the sender's\",\n  \"x-client\": {\"name\": \"demo\"},\n  \"to\": [%q], \"ts\": %s, \"from\": %q, \"t\": \"msg\", \"v\": 1\n}\n", alice.ID, ts, bob.ID))
-	addValid("msg-unicode-escapes", bob, hdr("msg", bob)+fmt.Sprintf(`,"to":[%q],"body":"café 😀 — ✓"}`, alice.ID))
+	addValid("msg-unicode-raw", bob, hdr("msg", bob)+fmt.Sprintf(`,"to":[%q],"body":"café 😀 — ✓"}`, alice.ID))
+	// The backslashes below are literal: the payload carries \u escapes, including a
+	// surrogate pair, which is the accepted side of the §3.2 surrogate rule.
+	addValid("msg-unicode-escapes", bob, hdr("msg", bob)+fmt.Sprintf(`,"to":[%q],"body":"caf\u00e9 \ud83d\ude00 \u2014 \u2713"}`, alice.ID))
 	addValid("msg-body-max", bob, hdr("msg", bob)+fmt.Sprintf(`,"to":[%q],"body":"%s"}`, alice.ID, strings.Repeat("a", 32768)))
 	addValid("msg-ts-max", bob, fmt.Sprintf(`{"v":1,"t":"msg","from":%q,"ts":9007199254740991,"to":[%q],"body":"x"}`, bob.ID, alice.ID))
 
@@ -142,7 +145,7 @@ func main() {
 	addInvalid("enc-signer-uppercase", "base32 must be lowercase", join([]string{p[0], strings.ToUpper(p[1]), p[2], p[3]}), am.EEncoding)
 	addInvalid("enc-signer-short", "51 base32 chars", join([]string{p[0], p[1][:51], p[2], p[3]}), am.EEncoding)
 	addInvalid("enc-signer-trailing-bits", "non-zero unused bits in the last base32 char", join([]string{p[0], bumpLast(p[1], "abcdefghijklmnopqrstuvwxyz234567"), p[2], p[3]}), am.EEncoding)
-	addInvalid("enc-payload-padded", "base64url padding is not allowed", join([]string{p[0], p[1], p[2] + "=", p[3]}), am.EEncoding)
+	addInvalid("enc-payload-padded", "correct base64url padding is still not allowed", join([]string{p[0], p[1], p[2] + strings.Repeat("=", (4-len(p[2])%4)%4), p[3]}), am.EEncoding)
 	addInvalid("enc-payload-newline", "a newline inside base64url (some decoders skip it)", join([]string{p[0], p[1], p[2][:10] + "\n" + p[2][10:], p[3]}), am.EEncoding)
 	addInvalid("enc-payload-std-alphabet", "'+' from the standard alphabet", join([]string{p[0], p[1], "+" + p[2][1:], p[3]}), am.EEncoding)
 	// A payload whose length is not a multiple of 3 has unused bits in its last char.
@@ -254,6 +257,58 @@ func main() {
 		addInvalid(w.name, w.why, forgeSmallOrder(w.pub, w.order), am.EEncoding)
 	}
 
+	// sa is s for payloads whose `from` is alice, so step 7 cannot also fail.
+	sa := func(name, why, payload string) { addInvalid(name, why, sign(alice, payload), am.ESchema) }
+
+	// ---- gaps found by reading the spec against the vectors (one each side of a rule).
+	pg := parts(base)
+	addInvalid("enc-signer-long", "53 base32 chars", join([]string{pg[0], pg[1] + "a", pg[2], pg[3]}), am.EEncoding)
+	addInvalid("enc-signature-trailing-bits", "non-zero unused bits in the last base64url char of the signature", join([]string{pg[0], pg[1], pg[2], bumpLast(pg[3], b64a)}), am.EEncoding)
+	addInvalid("enc-signature-padded", "correctly padded signature (\"==\") is still not allowed", join([]string{pg[0], pg[1], pg[2], pg[3] + "=="}), am.EEncoding)
+	addInvalid("enc-signature-long", "65-byte signature", join([]string{pg[0], pg[1], pg[2], am.B64(append(mustB64(pg[3]), 0))}), am.EEncoding)
+	addInvalid("sig-torsion-in-r", "R carries an added order-8 point: a cofactored verifier accepts, cofactorless (§3.1) rejects", torsionInR(bob, hdr("msg", bob)+","+to+`,"body":"torsion"}`), am.ESignature)
+	addValid("msg-to-small-order-key", bob, h+fmt.Sprintf(`,"to":[%q],"body":"key ids inside a payload are format-checked only"}`, am.KeyID(identity)))
+	addInvalid("key-not-on-curve", "canonical, not small order, but no curve point has this y: verification fails", notOnCurve(), am.ESignature)
+
+	j("json-empty-payload", "an empty payload is not a JSON object", "")
+	j("json-duplicate-key-escaped", "\"body\" and \"b\\u006fdy\" are the same key once unescaped", h+","+to+`,"body":"x","b\u006fdy":"y"}`)
+	j("json-negative-zero", "-0 carries a sign", h+","+to+`,"body":"x","x":-0}`)
+	j("json-raw-control-char", "a raw tab inside a string must be escaped", h+","+to+`,"body":"a`+"\t"+`b"}`)
+	addValid("json-zero-and-escapes", bob, h+","+to+`,"body":"tab\there \"quoted\" back\\slash \/ \u0000","x":0}`)
+
+	s("schema-v-missing", "v absent", fmt.Sprintf(`{"t":"msg","from":%q,"ts":%s,%s,"body":"x"}`, bob.ID, ts, to))
+	s("schema-v-string", "v as a string", fmt.Sprintf(`{"v":"1","t":"msg","from":%q,"ts":%s,%s,"body":"x"}`, bob.ID, ts, to))
+	s("schema-t-missing", "t absent", fmt.Sprintf(`{"v":1,"from":%q,"ts":%s,%s,"body":"x"}`, bob.ID, ts, to))
+	s("schema-to-string", "to must be an array, not a bare key id", h+fmt.Sprintf(`,"to":%q,"body":"x"}`, alice.ID))
+	s("schema-to-over", "33 recipients", h+`,"to":[`+modList(33)+`],"body":"x"}`)
+	addValid("msg-to-at-limit", bob, h+`,"to":[`+modList(32)+`],"body":"x"}`)
+	s("schema-subject-empty", "subject of 0 bytes", h+","+to+`,"body":"x","subject":""}`)
+	addValid("msg-subject-at-limit", bob, h+","+to+`,"body":"x","subject":"`+strings.Repeat("s", 200)+`"}`)
+	s("schema-handle-name-short", "1-char handle (minimum is 2)", hdr("handle", bob)+`,"name":"b","hub":"hub.example"}`)
+	s("schema-handle-name-long", "32-char handle (maximum is 31)", hdr("handle", bob)+`,"name":"`+strings.Repeat("b", 32)+`","hub":"hub.example"}`)
+	s("schema-handle-name-newline", "a trailing newline is not part of a name (regex $ must not match before it)", hdr("handle", bob)+`,"name":"bob\n","hub":"hub.example"}`)
+	addValid("handle-name-at-limits", bob, hdr("handle", bob)+`,"name":"`+strings.Repeat("b", 31)+`","hub":"hub.example"}`)
+	addValid("handle-name-min", carol, hdr("handle", carol)+`,"name":"cc","hub":"hub.example"}`)
+	sa("schema-grant-name-long", "33-char agent name (maximum is 32)", hdr("grant", alice)+fmt.Sprintf(`,"agent":%q,"name":"%s","hub":"hub.example"}`, scout.ID, strings.Repeat("a", 33)))
+	sa("schema-grant-name-empty", "empty agent name", hdr("grant", alice)+fmt.Sprintf(`,"agent":%q,"name":"","hub":"hub.example"}`, scout.ID))
+	addValid("grant-name-at-limits", alice, hdr("grant", alice)+fmt.Sprintf(`,"agent":%q,"name":"%s","hub":"hub.example"}`, carol.ID, strings.Repeat("a", 32)))
+	s("schema-hub-uppercase", "hub names are lowercase", hdr("handle", bob)+`,"name":"bob","hub":"Hub.example"}`)
+	s("schema-hub-no-dot", "hub names need a dot", hdr("handle", bob)+`,"name":"bob","hub":"localhost"}`)
+	s("schema-hub-trailing-dot", "no trailing dot", hdr("handle", bob)+`,"name":"bob","hub":"hub.example."}`)
+	s("schema-channel-bad-post", "unknown post policy", hdr("channel", bob)+`,"slug":"bob","title":"B","read":"public","post":"everyone","join":"open"}`)
+	s("schema-channel-bad-join", "unknown join policy", hdr("channel", bob)+`,"slug":"bob","title":"B","read":"public","post":"owner","join":"invite"}`)
+	s("schema-channel-about-over", "about of 1001 bytes", hdr("channel", bob)+`,"slug":"bob","title":"B","about":"`+strings.Repeat("a", 1001)+`","read":"public","post":"owner","join":"open"}`)
+	s("schema-channel-tag-duplicate", "the same tag twice", hdr("channel", bob)+`,"slug":"bob","title":"B","tags":["a","a"],"read":"public","post":"owner","join":"open"}`)
+	s("schema-channel-tag-long", "tag of 25 chars", hdr("channel", bob)+`,"slug":"bob","title":"B","tags":["`+strings.Repeat("t", 25)+`"],"read":"public","post":"owner","join":"open"}`)
+	s("schema-channel-title-empty", "empty title", hdr("channel", bob)+`,"slug":"bob","title":"","read":"public","post":"owner","join":"open"}`)
+	addValid("channel-other-limits", bob, hdr("channel", bob)+`,"slug":"`+strings.Repeat("s", 32)+`","title":"B","about":"`+strings.Repeat("a", 1000)+`","tags":["a","b","c","d","e","f","g","`+strings.Repeat("t", 24)+`"],"read":"public","post":"anyone","join":"approval"}`)
+	sa("schema-ban-until-string", "until must be an integer", hdr("ban", alice)+fmt.Sprintf(`,"channel":%q,"member":%q,"until":"tomorrow"}`, ch, bob.ID))
+	s("schema-join-channel-not-id", "channel is not a c_ id", hdr("join", bob)+`,"channel":"#llm-evals"}`)
+	s("schema-auth-path-relative", "path must start with /", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"v1/inbox","body":%q}`, emptySHA))
+	s("schema-auth-method-long", "method of 17 letters", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"%s","path":"/","body":%q}`, strings.Repeat("G", 17), emptySHA))
+	s("schema-auth-body-short", "63 hex chars", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"/","body":%q}`, emptySHA[:63]))
+	addValid("auth-nonce-min", bob, hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"%s","path":"/","body":%q,"n":"n"}`, strings.Repeat("G", 16), emptySHA))
+
 	// ---- E_SIGNER
 	addInvalid("signer-mismatch", "valid object claiming from=bob, signed by alice", sign(alice, h+","+to+`,"body":"x"}`), am.ESigner)
 
@@ -280,6 +335,101 @@ func main() {
 
 func fieldP() *big.Int {
 	return new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+}
+
+// Affine twisted-Edwards arithmetic (a = -1) over big.Int, enough to build one vector.
+type pt struct{ x, y *big.Int }
+
+func edD() *big.Int {
+	p := fieldP()
+	return new(big.Int).Mod(new(big.Int).Mul(big.NewInt(-121665), new(big.Int).ModInverse(big.NewInt(121666), p)), p)
+}
+
+func ptAdd(a, b pt) pt {
+	p, d := fieldP(), edD()
+	t := new(big.Int).Mul(d, new(big.Int).Mul(new(big.Int).Mul(a.x, b.x), new(big.Int).Mul(a.y, b.y)))
+	t.Mod(t, p)
+	xn := new(big.Int).Add(new(big.Int).Mul(a.x, b.y), new(big.Int).Mul(b.x, a.y))
+	yn := new(big.Int).Add(new(big.Int).Mul(a.y, b.y), new(big.Int).Mul(a.x, b.x))
+	xd := new(big.Int).ModInverse(new(big.Int).Mod(new(big.Int).Add(big.NewInt(1), t), p), p)
+	yd := new(big.Int).ModInverse(new(big.Int).Mod(new(big.Int).Sub(big.NewInt(1), t), p), p)
+	return pt{new(big.Int).Mod(new(big.Int).Mul(xn, xd), p), new(big.Int).Mod(new(big.Int).Mul(yn, yd), p)}
+}
+
+func ptMul(k *big.Int, a pt) pt {
+	r := pt{big.NewInt(0), big.NewInt(1)}
+	for i := k.BitLen() - 1; i >= 0; i-- {
+		r = ptAdd(r, r)
+		if k.Bit(i) == 1 {
+			r = ptAdd(r, a)
+		}
+	}
+	return r
+}
+
+// ptDecode recovers x for y (RFC 8032 §5.1.3) with the given sign bit.
+func ptDecode(enc []byte) pt {
+	p, d := fieldP(), edD()
+	b := append([]byte{}, enc...)
+	sign := b[31] >> 7
+	b[31] &= 0x7f
+	rev := make([]byte, 32)
+	for i := range b {
+		rev[31-i] = b[i]
+	}
+	y := new(big.Int).SetBytes(rev)
+	y2 := new(big.Int).Mul(y, y)
+	u := new(big.Int).Mod(new(big.Int).Sub(y2, big.NewInt(1)), p)
+	v := new(big.Int).Mod(new(big.Int).Add(new(big.Int).Mul(d, y2), big.NewInt(1)), p)
+	x2 := new(big.Int).Mod(new(big.Int).Mul(u, new(big.Int).ModInverse(v, p)), p)
+	x := new(big.Int).Exp(x2, new(big.Int).Rsh(new(big.Int).Add(p, big.NewInt(3)), 3), p)
+	if new(big.Int).Mod(new(big.Int).Sub(new(big.Int).Mul(x, x), x2), p).Sign() != 0 {
+		i := new(big.Int).Exp(big.NewInt(2), new(big.Int).Rsh(new(big.Int).Sub(p, big.NewInt(1)), 2), p)
+		x.Mod(x.Mul(x, i), p)
+	}
+	if x.Bit(0) != uint(sign) {
+		x.Sub(p, x)
+	}
+	return pt{x, y}
+}
+
+func ptEncode(a pt) []byte {
+	out := leInt(a.y)
+	out[31] |= byte(a.x.Bit(0)) << 7
+	return out
+}
+
+func leBytesInt(b []byte) *big.Int {
+	rev := make([]byte, len(b))
+	for i := range b {
+		rev[len(b)-1-i] = b[i]
+	}
+	return new(big.Int).SetBytes(rev)
+}
+
+// torsionInR signs payload as k honestly, then adds an order-8 point T to R and
+// recomputes S for the new challenge: [8][S]B = [8]R' + [8][k']A holds, so a
+// cofactored verifier accepts, while [S]B = R' + [k']A fails by exactly T.
+func torsionInR(k *key, payload string) string {
+	L, _ := new(big.Int).SetString("7237005577332262213973186563042994240857116359379907606001950938285454250989", 10)
+	seed, _ := hex.DecodeString(k.Seed)
+	hs := sha512.Sum512(seed)
+	hs[0] &= 248
+	hs[31] &= 127
+	hs[31] |= 64
+	a := leBytesInt(hs[:32])
+	pub := k.priv.Public().(ed25519.PublicKey)
+	baseEnc := leInt(new(big.Int).Mod(new(big.Int).Mul(big.NewInt(4), new(big.Int).ModInverse(big.NewInt(5), fieldP())), fieldP()))
+	B := ptDecode(baseEnc)
+	t8, _ := hex.DecodeString("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05")
+	T := ptDecode(t8)
+	r := new(big.Int).SetInt64(7_919) // any nonce; determinism matters, secrecy does not here
+	Rp := ptEncode(ptAdd(ptMul(r, B), T))
+	h := sha512.Sum512(append(append(append([]byte{}, Rp...), pub...), append([]byte(am.Domain), payload...)...))
+	kc := new(big.Int).Mod(leBytesInt(h[:]), L)
+	S := new(big.Int).Mod(new(big.Int).Add(r, new(big.Int).Mul(kc, a)), L)
+	sig := append(Rp, leInt(S)...)
+	return "v1." + am.B32(pub) + "." + am.B64([]byte(payload)) + "." + am.B64(sig)
 }
 
 func leInt(n *big.Int) []byte {
@@ -309,6 +459,28 @@ func forgeSmallOrder(pub []byte, order int64) string {
 		}
 		k := new(big.Int).Mod(new(big.Int).SetBytes(rev), L)
 		if new(big.Int).Mod(k, big.NewInt(order)).Sign() == 0 {
+			return "v1." + am.B32(pub) + "." + am.B64([]byte(payload)) + "." + am.B64(sig)
+		}
+	}
+}
+
+// notOnCurve signs nothing: it builds a token whose signer y is canonical and not
+// small order, but has no x on the curve, so Ed25519 verification must fail.
+func notOnCurve() string {
+	p := fieldP()
+	d := new(big.Int).Mod(new(big.Int).Mul(big.NewInt(-121665), new(big.Int).ModInverse(big.NewInt(121666), p)), p)
+	exp := new(big.Int).Rsh(new(big.Int).Sub(p, big.NewInt(1)), 1) // Euler's criterion
+	for y := int64(2); ; y++ {
+		Y := big.NewInt(y)
+		y2 := new(big.Int).Mul(Y, Y)
+		u := new(big.Int).Mod(new(big.Int).Sub(y2, big.NewInt(1)), p)
+		v := new(big.Int).Mod(new(big.Int).Add(new(big.Int).Mul(d, y2), big.NewInt(1)), p)
+		x2 := new(big.Int).Mod(new(big.Int).Mul(u, new(big.Int).ModInverse(v, p)), p)
+		if new(big.Int).Exp(x2, exp, p).Cmp(new(big.Int).Sub(p, big.NewInt(1))) == 0 {
+			pub := leInt(Y)
+			payload := fmt.Sprintf(`{"v":1,"t":"handle","from":%q,"ts":%s,"name":"nocurve","hub":"hub.example"}`, am.KeyID(pub), ts)
+			sig := make([]byte, 64)
+			sig[0] = 1 // R = identity encoding, S = 0
 			return "v1." + am.B32(pub) + "." + am.B64([]byte(payload)) + "." + am.B64(sig)
 		}
 	}
