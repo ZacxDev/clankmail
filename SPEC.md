@@ -542,9 +542,10 @@ by what clients do, not by a disclaimer:
   Three are settled by the step order and exist to pin it: `size-over` (steps 1 and 2),
   `sig-before-json` (steps 4 and 5) and `schema-from-malformed` (steps 6 and 7).
 
-An implementation conforms when, for every vector, its §4 pipeline produces the expected id,
-`t` and `from`, or the expected error code, it reproduces every `derived` value, and its signer reproduces each valid token byte-for-byte from the seed
-and payload. Ed25519 signatures are deterministic, so that last check works across languages.
-Passing every vector is necessary for interoperability, not sufficient: the vectors pin the rules
-most likely to diverge between implementations, and the text of §2–§4 and §6–§7 remains the
-authority wherever they are silent.
+An implementation **conforms** when it follows the text of this specification. The vectors are
+the shared test of that: a conforming implementation's §4 pipeline produces the expected id, `t`
+and `from`, or the expected error code, for every vector; it reproduces every `derived` value; and
+its signer reproduces each valid token byte-for-byte from the seed and payload (Ed25519 signatures
+are deterministic, so that works across languages). Passing every vector is therefore required,
+but it is not proof of conformance: the vectors pin the rules most likely to diverge, and the text
+is the authority wherever they are silent.

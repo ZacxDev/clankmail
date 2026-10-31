@@ -318,6 +318,16 @@
       "from": "k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq"
     },
     {
+      "name": "msg-to-small-order-key",
+      "signer": "bob",
+      "payload": "{\"v\":1,\"t\":\"msg\",\"from\":\"k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq\",\"ts\":1767225600000,\"to\":[\"k_aeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"body\":\"key ids inside a payload are format-checked only\"}",
+      "payload_b64": "eyJ2IjoxLCJ0IjoibXNnIiwiZnJvbSI6ImtfcmFoZmk2Zmtpd2xtdWptN2NraW52dWZtdzVzbnltbHpvdHN4YW43ZjR6N3p0ZG14bWFjcSIsInRzIjoxNzY3MjI1NjAwMDAwLCJ0byI6WyJrX2FlYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiXSwiYm9keSI6ImtleSBpZHMgaW5zaWRlIGEgcGF5bG9hZCBhcmUgZm9ybWF0LWNoZWNrZWQgb25seSJ9",
+      "token": "v1.rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq.eyJ2IjoxLCJ0IjoibXNnIiwiZnJvbSI6ImtfcmFoZmk2Zmtpd2xtdWptN2NraW52dWZtdzVzbnltbHpvdHN4YW43ZjR6N3p0ZG14bWFjcSIsInRzIjoxNzY3MjI1NjAwMDAwLCJ0byI6WyJrX2FlYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiXSwiYm9keSI6ImtleSBpZHMgaW5zaWRlIGEgcGF5bG9hZCBhcmUgZm9ybWF0LWNoZWNrZWQgb25seSJ9.KWxfI3uxBZbpeAGh_TqiDd98lukKzDe7PlhqAhpMYE0zFq9knLQpjmd-6jFBCJHpquJYJYKX2QhmUo2-X92yBg",
+      "id": "m_cuan6nzywyrb5lvskkybiztm2s3yenexfkdy6mtqudxamh7mge7a",
+      "t": "msg",
+      "from": "k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq"
+    },
+    {
       "name": "json-zero-and-escapes",
       "signer": "bob",
       "payload": "{\"v\":1,\"t\":\"msg\",\"from\":\"k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq\",\"ts\":1767225600000,\"to\":[\"k_idm5vq65dykcpqc2k4sxc2iurwm6nu5ou5uczbgtgpxpejxgfjeq\"],\"body\":\"tab\\there \\\"quoted\\\" back\\\\slash \\/ \\u0000\",\"x\":0}",
@@ -844,6 +854,12 @@
       "error": "E_ENCODING"
     },
     {
+      "name": "sig-torsion-in-r",
+      "why": "R carries an added order-8 point: a cofactored verifier accepts, cofactorless (§3.1) rejects",
+      "token": "v1.rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq.eyJ2IjoxLCJ0IjoibXNnIiwiZnJvbSI6ImtfcmFoZmk2Zmtpd2xtdWptN2NraW52dWZtdzVzbnltbHpvdHN4YW43ZjR6N3p0ZG14bWFjcSIsInRzIjoxNzY3MjI1NjAwMDAwLCJ0byI6WyJrX2lkbTV2cTY1ZHlrY3BxYzJrNHN4YzJpdXJ3bTZudTVvdTV1Y3piZ3RncHhwZWp4Z2ZqZXEiXSwiYm9keSI6InRvcnNpb24ifQ.lqXe4J_avc24S5brRSb8MfyHf0ftXDzYDXSbrTobeiT6RKwgo4zFihrs42cXkRd-D35qjbP6dwqHblRCTKdQDQ",
+      "error": "E_SIGNATURE"
+    },
+    {
       "name": "key-not-on-curve",
       "why": "canonical, not small order, but no curve point has this y: verification fails",
       "token": "v1.aiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.eyJ2IjoxLCJ0IjoiaGFuZGxlIiwiZnJvbSI6ImtfYWlhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsInRzIjoxNzY3MjI1NjAwMDAwLCJuYW1lIjoibm9jdXJ2ZSIsImh1YiI6Imh1Yi5leGFtcGxlIn0.AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -930,13 +946,13 @@
     {
       "name": "schema-grant-name-long",
       "why": "33-char agent name (maximum is 32)",
-      "token": "v1.rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq.eyJ2IjoxLCJ0IjoiZ3JhbnQiLCJmcm9tIjoia19pZG01dnE2NWR5a2NwcWMyazRzeGMyaXVyd202bnU1b3U1dWN6Ymd0Z3B4cGVqeGdmamVxIiwidHMiOjE3NjcyMjU2MDAwMDAsImFnZW50Ijoia19vbnRtanlhN3hvbGlnanZ0dWdtZjdpY3ppbWJ2cnF6a3g0aHNueWc3bjQ0N3JvZmRranphIiwibmFtZSI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImh1YiI6Imh1Yi5leGFtcGxlIn0.5Nqkbvm6EEPi1ZSmAnC-d4PMlOL-0pjPM7mXJLJGNAzVMKdKpWbPbwQSIB5ZRa2dGSjvL7-N7vfUY6WBsn-zCQ",
+      "token": "v1.idm5vq65dykcpqc2k4sxc2iurwm6nu5ou5uczbgtgpxpejxgfjeq.eyJ2IjoxLCJ0IjoiZ3JhbnQiLCJmcm9tIjoia19pZG01dnE2NWR5a2NwcWMyazRzeGMyaXVyd202bnU1b3U1dWN6Ymd0Z3B4cGVqeGdmamVxIiwidHMiOjE3NjcyMjU2MDAwMDAsImFnZW50Ijoia19vbnRtanlhN3hvbGlnanZ0dWdtZjdpY3ppbWJ2cnF6a3g0aHNueWc3bjQ0N3JvZmRranphIiwibmFtZSI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImh1YiI6Imh1Yi5leGFtcGxlIn0.XP4OPYLk61A-bVvTQEE4LDqq0X2pLSzancbJ-auEdm8QVTntARWWNfI1DhGCzNvcEa54tNgCspc3Duxusu_LAQ",
       "error": "E_SCHEMA"
     },
     {
       "name": "schema-grant-name-empty",
       "why": "empty agent name",
-      "token": "v1.rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq.eyJ2IjoxLCJ0IjoiZ3JhbnQiLCJmcm9tIjoia19pZG01dnE2NWR5a2NwcWMyazRzeGMyaXVyd202bnU1b3U1dWN6Ymd0Z3B4cGVqeGdmamVxIiwidHMiOjE3NjcyMjU2MDAwMDAsImFnZW50Ijoia19vbnRtanlhN3hvbGlnanZ0dWdtZjdpY3ppbWJ2cnF6a3g0aHNueWc3bjQ0N3JvZmRranphIiwibmFtZSI6IiIsImh1YiI6Imh1Yi5leGFtcGxlIn0.IkTalU02i_AZxTGVChJDWSmPiTqMV_sbd4m4Iu_Lc_YL7UPJOdFyqZ1y_sBOlBuBH0DzDY3zvH0phZ1B6lB_Ag",
+      "token": "v1.idm5vq65dykcpqc2k4sxc2iurwm6nu5ou5uczbgtgpxpejxgfjeq.eyJ2IjoxLCJ0IjoiZ3JhbnQiLCJmcm9tIjoia19pZG01dnE2NWR5a2NwcWMyazRzeGMyaXVyd202bnU1b3U1dWN6Ymd0Z3B4cGVqeGdmamVxIiwidHMiOjE3NjcyMjU2MDAwMDAsImFnZW50Ijoia19vbnRtanlhN3hvbGlnanZ0dWdtZjdpY3ppbWJ2cnF6a3g0aHNueWc3bjQ0N3JvZmRranphIiwibmFtZSI6IiIsImh1YiI6Imh1Yi5leGFtcGxlIn0.ak23VzuKh-FPlVPTcfqLUP-TPgxez8pb1oX2zxYoNDP7vJH0xoAnYsSV9poenljtWckngCAo_hqRx4jbVgLkAA",
       "error": "E_SCHEMA"
     },
     {
@@ -996,7 +1012,7 @@
     {
       "name": "schema-ban-until-string",
       "why": "until must be an integer",
-      "token": "v1.rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq.eyJ2IjoxLCJ0IjoiYmFuIiwiZnJvbSI6ImtfaWRtNXZxNjVkeWtjcHFjMms0c3hjMml1cndtNm51NW91NXVjemJndGdweHBlanhnZmplcSIsInRzIjoxNzY3MjI1NjAwMDAwLCJjaGFubmVsIjoiY19kNWlsY3g1NzIzZXo1ZGN2amJscm9tZnVtcDVxcWlhcnByNWhuNHRyNXNvN21pcHJsM25hIiwibWVtYmVyIjoia19yYWhmaTZma2l3bG11am03Y2tpbnZ1Zm13NXNueW1sem90c3hhbjdmNHo3enRkbXhtYWNxIiwidW50aWwiOiJ0b21vcnJvdyJ9.AReucx1jZZEm3-hIz0_D07Dqw18vaOeVt1lkCkL2lxPFiwtMLOuZ3UQRyksKWzGN1tRxT3y7JcmLru8IasK3Cg",
+      "token": "v1.idm5vq65dykcpqc2k4sxc2iurwm6nu5ou5uczbgtgpxpejxgfjeq.eyJ2IjoxLCJ0IjoiYmFuIiwiZnJvbSI6ImtfaWRtNXZxNjVkeWtjcHFjMms0c3hjMml1cndtNm51NW91NXVjemJndGdweHBlanhnZmplcSIsInRzIjoxNzY3MjI1NjAwMDAwLCJjaGFubmVsIjoiY19kNWlsY3g1NzIzZXo1ZGN2amJscm9tZnVtcDVxcWlhcnByNWhuNHRyNXNvN21pcHJsM25hIiwibWVtYmVyIjoia19yYWhmaTZma2l3bG11am03Y2tpbnZ1Zm13NXNueW1sem90c3hhbjdmNHo3enRkbXhtYWNxIiwidW50aWwiOiJ0b21vcnJvdyJ9.UB64HZGoln7MbSFH1kEntggxrOOKZQnLU7dU5jemibvmYG5ESy-LlWr_aGj21y323g4E1jGyLu_nG6kH8ScODQ",
       "error": "E_SCHEMA"
     },
     {

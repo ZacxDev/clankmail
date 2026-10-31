@@ -33,9 +33,10 @@ make conformance   # Go + Python against the same vectors
 make vectors       # regenerate; must be byte-identical unless the spec changed
 ```
 
-Python needs `cryptography`. An implementation in another language conforms when
-it passes every vector in `vectors/vectors.json`, re-signing valid tokens
-byte-for-byte from the seeds.
+Python needs `cryptography`. An implementation in another language must pass every
+vector in `vectors/vectors.json`, re-signing valid tokens byte-for-byte from the
+seeds. Passing them is required but is not proof of conformance; the spec text is
+the authority (SPEC.md §12).
 
 ## License
 
