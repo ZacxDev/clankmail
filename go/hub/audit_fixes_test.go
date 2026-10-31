@@ -1,17 +1,23 @@
 package hub
 
-// Regression tests for PR #2 audit round 1. Each one fails against the hub at
-// 1658234 (the commit the audit read) and passes after the fix.
+// Regression tests for PR #2 audit rounds 1 and 2. Round-1 tests were
+// measured red at 8dc466b, the byte-identical (hub code) rebase of 1658234
+// that the audit read; round-2 tests were measured red at d077193. All pass
+// after their fixes.
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ZacxDev/clankmail/go/clankmail"
 )
 
 // 🔴1: a live ban overrides the mods list and membership (§7.3).
@@ -69,9 +75,9 @@ func TestBannedModLosesPowers(t *testing.T) {
 	}
 }
 
-// 🟡2a: the per-key limit is charged before any other check, so forbidden
-// and idempotent submissions cost budget too.
-func TestRejectedAndIdempotentSubmitsChargeKeyLimit(t *testing.T) {
+// 🟡2a (as corrected by round 2): forbidden FRESH submissions pay the
+// signer's key; idempotent retries of a stored token do not.
+func TestForbiddenSubmitsChargeKeyLimitRetriesDoNot(t *testing.T) {
 	e := newEnv(t)
 	cid := e.createChannel(alice, "owner-only", "public", "owner", "open", nil)
 	n := int(DefaultKeyLimit.Burst)
@@ -82,10 +88,72 @@ func TestRejectedAndIdempotentSubmitsChargeKeyLimit(t *testing.T) {
 
 	m := e.dm(scout, "retried", carol)
 	e.mustSubmit(m)
-	for i := 1; i < n; i++ {
+	for i := 0; i < 2*n; i++ {
 		wantOK(t, e.submit(m))
 	}
-	wantErr(t, e.submit(m), 429, ERate)
+	// The retries left scout's budget untouched.
+	e.mustSubmit(e.dm(scout, "fresh after many retries", carol))
+}
+
+// Round 2 🔴: replaying a victim's stored or stale tokens, from another
+// client address, must not drain the victim's per-key budget (it could
+// otherwise block the victim's revoke).
+func TestReplayCannotDrainVictimKeyLimit(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} })
+	cid := e.createChannel(alice, "alice-says", "public", "owner", "open", nil)
+	post := e.tok(alice, "msg", map[string]any{"to": []any{cid}, "body": "public post"})
+	e.mustSubmit(post)
+	handle := e.tok(alice, "handle", map[string]any{"name": "alice", "hub": hubName})
+	e.mustSubmit(handle)
+	stale := e.tokAt(alice, -10*time.Minute, "msg", map[string]any{"to": []any{cid}, "body": "signed long ago"})
+
+	replay := func(tok string) resp {
+		req, _ := http.NewRequest("POST", e.srv.URL+"/v1/submit", strings.NewReader(tok))
+		req.Header.Set("X-Forwarded-For", "203.0.113.66") // the attacker's address
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		out := resp{status: res.StatusCode}
+		json.NewDecoder(res.Body).Decode(&out.body)
+		return out
+	}
+	for i := 0; i < 70; i++ { // 70 stale replays alone exceed the 60-token burst
+		wantOK(t, replay(post))
+		wantOK(t, replay(handle))
+		wantErr(t, replay(stale), 400, EStale)
+	}
+	// 210 replays later, alice's next fresh post is accepted.
+	r := e.submit(e.tok(alice, "msg", map[string]any{"to": []any{cid}, "body": "still mine"}))
+	if r.status != 200 {
+		t.Fatalf("victim's fresh post after 210 replays: want 200, got %d %v", r.status, r.body)
+	}
+}
+
+// Round 2 🟡: the hub re-reads the EXACT keys "to" and "re", never a
+// case-insensitive match. A payload with both "to" and "TO" verifies with
+// to=[bob]; the hub must read [bob] too.
+func TestStoredFieldsReadExactKeys(t *testing.T) {
+	e := newEnv(t)
+	// Literal bytes: "TO" comes after "to" so a case-insensitive decoder
+	// would let it win.
+	payload := fmt.Sprintf(`{"v":1,"t":"msg","from":"%s","ts":%d,"to":["%s"],"TO":["%s"],"body":"for bob only"}`,
+		kid(scout), e.now.Load(), kid(bob), kid(eve))
+	m := clankmail.Sign(scout, []byte(payload))
+	id := e.mustSubmit(m)
+	if r := e.as(bob, "GET", "/v1/objects/"+id, nil); r.status != 200 {
+		t.Errorf("bob (in to) fetching his DM: want 200, got %d %v", r.status, r.body)
+	}
+	if r := e.as(eve, "GET", "/v1/objects/"+id, nil); r.status != 404 {
+		t.Errorf("eve (only in TO) fetching bob's DM: want 404, got %d %v", r.status, r.body)
+	}
+	// The reply rule reads the same key: eve citing it is a stranger.
+	reply := e.tok(eve, "msg", map[string]any{"to": []any{kid(scout)}, "body": "re", "re": id})
+	e.mustSubmit(reply)
+	if has(e.queue(scout, "inbox"), reply) {
+		t.Errorf("eve, named only in TO, used the reply route into scout's inbox")
+	}
 }
 
 // 🟡2b: the per-client-address limit is charged before signature

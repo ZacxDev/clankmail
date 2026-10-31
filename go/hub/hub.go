@@ -236,27 +236,31 @@ func (h *Hub) submit(ctx context.Context, token string) (string, error) {
 	if herr != nil {
 		return "", herr
 	}
-	// The per-key limit is charged right after verification (the signer is
-	// only known then) and before every other check: forbidden, stale and
-	// idempotent submissions cost budget too.
-	if !h.keyRL.allow(h.nowMS(), obj.From) {
-		return "", &hubErr{http.StatusTooManyRequests, ERate, "rate limit exceeded (signer key)"}
-	}
-	if obj.Type == "auth" {
-		return "", forbidden("auth tokens are never submitted (§6.4)")
-	}
 	now := h.nowMS()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	err := h.cfg.Store.Tx(ctx, func(ops Ops) error {
-		// §5 order: a stored id is answered before freshness, so a late retry
-		// of an accepted object still gets its original result.
+		// Order matters (§5). A stored id is answered first, so a late retry
+		// of an accepted object still gets its original result; then
+		// freshness. Neither charges the signer's key: anyone can replay a
+		// victim's public or stale tokens, and charging the victim for that
+		// would let a stranger drain its budget (and block its revoke). The
+		// replayer's own client address has already paid in handleSubmit.
 		if prev, err := ops.Object(obj.ID); err != nil || prev != nil {
 			return err
 		}
 		if absDiff(obj.Fields["ts"].(int64), now) > submitWindowMS {
 			return badRequest(EStale, "ts outside ±300 s of hub time")
+		}
+		// Only a fresh, never-stored token reaches here, so only its signer
+		// can have produced it: the per-key limit is charged now, before
+		// every remaining check, and forbidden submissions still pay.
+		if !h.keyRL.allow(now, obj.From) {
+			return &hubErr{http.StatusTooManyRequests, ERate, "rate limit exceeded (signer key)"}
+		}
+		if obj.Type == "auth" {
+			return forbidden("auth tokens are never submitted (§6.4)")
 		}
 		if err := sweepExpired(ops, now); err != nil {
 			return err
@@ -809,8 +813,8 @@ func threadRoot(ops Ops, obj *clankmail.Object) (string, error) {
 
 // stored is the part of an accepted msg payload the hub re-reads.
 type stored struct {
-	Re string   `json:"re"`
-	To []string `json:"to"`
+	Re string
+	To []string
 }
 
 // storedFields re-reads a token this hub verified when it accepted it. It
@@ -827,7 +831,16 @@ func storedFields(token string) stored {
 	if err != nil {
 		return m
 	}
-	json.Unmarshal(b, &m)
+	// Decode into a map and read the EXACT keys "re" and "to". A struct
+	// decode would match keys case-insensitively, so a payload carrying
+	// both "to" and "TO" (an unknown field §3.2 tells verifiers to ignore)
+	// would be read by the hub as TO while every verifier reads to.
+	var f map[string]any
+	if json.Unmarshal(b, &f) != nil {
+		return m
+	}
+	m.Re, _ = f["re"].(string)
+	m.To = strList(f["to"])
 	return m
 }
 
