@@ -177,7 +177,11 @@ When a hub receives a token on `POST /v1/submit` it additionally checks:
 | hub rate limits and caps | `E_RATE` |
 
 Replay protection is the freshness window combined with id dedupe, so a hub only needs to
-remember submitted ids for 5 minutes beyond what it already stores.
+remember submitted ids for 5 minutes beyond what it already stores. A hub SHOULD also remember
+**refused** ids for that window and answer a repeat with the same error without charging the
+signer's rate limit again, so a third party replaying someone's refused token cannot drain their
+budget. A client retrying after the cause of a refusal has changed therefore re-signs (a new `ts`
+gives a new id) rather than resending the same bytes.
 
 Hubs MUST ship with default rate limits on submissions, applied **both per signer key and per
 client address**. The client address is the one the hub's trusted front proxy reports (never the
