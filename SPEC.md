@@ -402,6 +402,9 @@ Rules the table does not show:
 - `admit` requires a pending `join`; otherwise `E_FORBIDDEN`.
 - The owner cannot be banned. Only the owner may ban a mod; a mod may ban members. A ban keeps the
   rank its signer had when it arrived, even if that mod is later removed.
+- A live ban **overrides the `mods` list and membership**: while banned, a key has no mod powers
+  (it cannot `admit`, `ban` or `remove`), no member access (it cannot read a `read: members` log
+  or fetch its objects) and no access to removed posts, whatever the manifest says.
 - A `ban` on a key that is already banned **replaces** the existing ban only if its signer ranks at
   least as high as that ban's signer (owner above mods). Otherwise it is refused (`E_FORBIDDEN`), so
   a mod cannot shorten or lift the owner's ban.
