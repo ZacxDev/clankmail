@@ -43,42 +43,24 @@ func (l *limiter) refill(b *bucket, now int64) {
 	}
 }
 
-// allow reports whether every key has a token, and takes one from each only
-// if so.
-func allowAll(now int64, pairs ...limitPair) bool {
-	for _, p := range pairs {
-		p.l.mu.Lock()
-	}
-	defer func() {
-		for _, p := range pairs {
-			p.l.mu.Unlock()
+// allow takes one token from key's bucket and reports whether it had one.
+func (l *limiter) allow(now int64, key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.buckets[key]
+	if b == nil {
+		if len(l.buckets) >= maxBuckets {
+			l.sweep(now)
 		}
-	}()
-	bs := make([]*bucket, len(pairs))
-	for i, p := range pairs {
-		b := p.l.buckets[p.key]
-		if b == nil {
-			if len(p.l.buckets) >= maxBuckets {
-				p.l.sweep(now)
-			}
-			b = &bucket{tokens: p.l.lim.Burst, last: now}
-			p.l.buckets[p.key] = b
-		}
-		p.l.refill(b, now)
-		if b.tokens < 1 {
-			return false
-		}
-		bs[i] = b
+		b = &bucket{tokens: l.lim.Burst, last: now}
+		l.buckets[key] = b
 	}
-	for _, b := range bs {
-		b.tokens--
+	l.refill(b, now)
+	if b.tokens < 1 {
+		return false
 	}
+	b.tokens--
 	return true
-}
-
-type limitPair struct {
-	l   *limiter
-	key string
 }
 
 func (l *limiter) sweep(now int64) {

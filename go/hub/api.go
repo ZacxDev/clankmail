@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,11 +36,7 @@ func (h *Hub) authenticate(r *http.Request, body []byte) (string, error) {
 	if obj.Type != "auth" {
 		return "", forbidden("Authorization token must be t=auth")
 	}
-	now := h.nowMS()
 	ts := obj.Fields["ts"].(int64)
-	if absDiff(ts, now) > authWindowMS {
-		return "", badRequest(EStale, "auth ts outside ±60 s of hub time")
-	}
 	f := obj.Fields
 	sum := sha256.Sum256(body)
 	switch {
@@ -53,6 +50,14 @@ func (h *Hub) authenticate(r *http.Request, body []byte) (string, error) {
 		return "", forbidden("auth body hash does not match request")
 	}
 	err := h.cfg.Store.Tx(r.Context(), func(ops Ops) error {
+		// Freshness, pruning and the replay check share one `now`, read
+		// inside the (serialised) transaction. Otherwise a request that
+		// passed freshness and then waited could find its id pruned by a
+		// later request and be accepted as new: a replay.
+		now := h.nowMS()
+		if absDiff(ts, now) > authWindowMS {
+			return badRequest(EStale, "auth ts outside ±60 s of hub time")
+		}
 		if rev, err := ops.KeyRevoked(obj.From); err != nil {
 			return err
 		} else if rev {
@@ -178,7 +183,7 @@ func (h *Hub) view(ctx context.Context, fn func(Ops) error) error { return h.cfg
 func (h *Hub) handleObject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !validID("m_", id) {
-		writeErr(w, notFound("no such object"))
+		writeErr(w, badRequest(EQuery, "want an m_ id"))
 		return
 	}
 	var ob *Obj
@@ -218,18 +223,18 @@ func (h *Hub) handleObject(w http.ResponseWriter, r *http.Request) {
 		}
 		var allowed bool
 		err = h.view(r.Context(), func(ops Ops) error {
-			if removed {
-				// Kept for audit: only the owner, mods and the author see it.
-				allowed = isMod(ch, key) || key == ob.From
-				return nil
-			}
 			if ch != nil {
-				m, err := isMember(ops, ch, key)
-				allowed = m
+				s, err := standingOf(ops, ch, key, h.nowMS())
+				if removed {
+					// Kept for audit: only the owner, unbanned mods and the
+					// unbanned author see it (§7.3, §8).
+					allowed = !s.banned && (s.mod || key == ob.From)
+				} else {
+					allowed = s.member
+				}
 				return err
 			}
-			o, _ := clankmail.Verify(ob.Token)
-			allowed = key == ob.From || o != nil && contains(strList(o.Fields["to"]), key)
+			allowed = key == ob.From || contains(storedFields(ob.Token).To, key)
 			return nil
 		})
 		if err != nil {
@@ -336,6 +341,10 @@ func (h *Hub) setAllow(w http.ResponseWriter, r *http.Request, owner, key string
 
 func (h *Hub) handleHandle(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.PathValue("name"), "@")
+	if !reHandleName.MatchString(name) {
+		writeErr(w, badRequest(EQuery, "malformed handle name"))
+		return
+	}
 	now := h.nowMS()
 	var handleTok string
 	agents := []map[string]string{}
@@ -487,6 +496,27 @@ func (h *Hub) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 
 // ---- GET /v1/channels/{c_id or #slug} ----
 
+// Path-parameter grammars (§6.1, §7.1). They repeat the reference schema's
+// patterns because clankmail does not export them; keep them in step.
+var (
+	reHandleName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,30}$`)
+	reSlugName   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,31}$`)
+)
+
+// checkChannelRef validates a {c_id or #slug} path parameter (§8: E_QUERY).
+func checkChannelRef(ref string) error {
+	if strings.HasPrefix(ref, "c_") {
+		if !validID("c_", ref) {
+			return badRequest(EQuery, "malformed c_ id")
+		}
+		return nil
+	}
+	if !reSlugName.MatchString(strings.TrimPrefix(ref, "#")) {
+		return badRequest(EQuery, "malformed channel slug")
+	}
+	return nil
+}
+
 func (h *Hub) resolveChannel(ops Ops, ref string) (*Channel, error) {
 	if !strings.HasPrefix(ref, "c_") {
 		id, err := ops.SlugChannel(strings.TrimPrefix(ref, "#"))
@@ -499,6 +529,10 @@ func (h *Hub) resolveChannel(ops Ops, ref string) (*Channel, error) {
 }
 
 func (h *Hub) handleChannel(w http.ResponseWriter, r *http.Request) {
+	if err := checkChannelRef(r.PathValue("ref")); err != nil {
+		writeErr(w, err)
+		return
+	}
 	var manifest, genesis, id string
 	err := h.view(r.Context(), func(ops Ops) error {
 		ch, err := h.resolveChannel(ops, r.PathValue("ref"))
@@ -530,6 +564,10 @@ func (h *Hub) handleChannel(w http.ResponseWriter, r *http.Request) {
 // ---- GET /v1/channels/{c_id}/log ----
 
 func (h *Hub) handleLog(w http.ResponseWriter, r *http.Request) {
+	if !validID("c_", r.PathValue("id")) {
+		writeErr(w, badRequest(EQuery, "want a c_ id"))
+		return
+	}
 	after, limit, err := page(r)
 	if err != nil {
 		writeErr(w, err)
@@ -559,7 +597,8 @@ func (h *Hub) handleLog(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		if err := h.view(r.Context(), func(ops Ops) error {
 			var err error
-			ok, err = isMember(ops, ch, key)
+			s, err := standingOf(ops, ch, key, h.nowMS())
+			ok = s.member
 			return err
 		}); err != nil {
 			writeErr(w, err)

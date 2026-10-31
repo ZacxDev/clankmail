@@ -8,6 +8,7 @@ package hub
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -213,9 +214,16 @@ func (h *Hub) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, badRequest(clankmail.EFormat, "could not read body"))
 		return
 	}
+	// §5: the per-client-address limit is charged before anything else, even
+	// signature verification, so malformed and rejected submissions cost
+	// budget too.
+	if !h.ipRL.allow(h.nowMS(), h.clientAddr(r)) {
+		writeErr(w, &hubErr{http.StatusTooManyRequests, ERate, "rate limit exceeded (client address)"})
+		return
+	}
 	// Surrounding whitespace (a trailing newline from a shell) is not part of
 	// the token; the signature covers the payload, not the transport.
-	id, herr := h.submit(r.Context(), strings.TrimSpace(string(raw)), h.clientAddr(r))
+	id, herr := h.submit(r.Context(), strings.TrimSpace(string(raw)))
 	if herr != nil {
 		writeErr(w, herr)
 		return
@@ -223,10 +231,16 @@ func (h *Hub) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
 
-func (h *Hub) submit(ctx context.Context, token, ip string) (string, error) {
+func (h *Hub) submit(ctx context.Context, token string) (string, error) {
 	obj, herr := verify(token)
 	if herr != nil {
 		return "", herr
+	}
+	// The per-key limit is charged right after verification (the signer is
+	// only known then) and before every other check: forbidden, stale and
+	// idempotent submissions cost budget too.
+	if !h.keyRL.allow(h.nowMS(), obj.From) {
+		return "", &hubErr{http.StatusTooManyRequests, ERate, "rate limit exceeded (signer key)"}
 	}
 	if obj.Type == "auth" {
 		return "", forbidden("auth tokens are never submitted (§6.4)")
@@ -256,9 +270,6 @@ func (h *Hub) submit(ctx context.Context, token, ip string) (string, error) {
 		apply, err := h.authorize(ops, obj, &stored, now)
 		if err != nil {
 			return err
-		}
-		if !allowAll(now, limitPair{h.keyRL, obj.From}, limitPair{h.ipRL, ip}) {
-			return &hubErr{http.StatusTooManyRequests, ERate, "rate limit exceeded"}
 		}
 		if err := ops.PutObject(stored); err != nil {
 			return err
@@ -590,7 +601,27 @@ func (h *Hub) authorizeChannel(ops Ops, obj *clankmail.Object, stored *Obj) (fun
 	}, nil
 }
 
-func isMod(ch *Channel, key string) bool { return key == ch.Owner || contains(ch.Mods, key) }
+// standing is a key's authority in one channel.
+type standing struct{ banned, mod, member bool }
+
+// standingOf is the single place channel authority is decided. A live ban
+// overrides the mods list and membership (§7.3): a banned key is neither a
+// mod nor a member, whatever the manifest says. The owner cannot be banned.
+func standingOf(ops Ops, ch *Channel, key string, now int64) (standing, error) {
+	if key == ch.Owner {
+		return standing{mod: true, member: true}, nil
+	}
+	b, err := banned(ops, ch, key, now)
+	if err != nil {
+		return standing{}, err
+	}
+	if b {
+		return standing{banned: true}, nil
+	}
+	mod := contains(ch.Mods, key)
+	st, err := ops.Membership(ch.ID, key)
+	return standing{mod: mod, member: mod || st == "member"}, err
+}
 
 func banned(ops Ops, ch *Channel, key string, now int64) (bool, error) {
 	until, _, ok, err := ops.BanUntil(ch.ID, key)
@@ -598,16 +629,6 @@ func banned(ops Ops, ch *Channel, key string, now int64) (bool, error) {
 		return false, err
 	}
 	return until == 0 || until > now, nil
-}
-
-// isMember reports whether key may act as a member: the owner, a mod, or a
-// key whose membership state is "member".
-func isMember(ops Ops, ch *Channel, key string) (bool, error) {
-	if isMod(ch, key) {
-		return true, nil
-	}
-	st, err := ops.Membership(ch.ID, key)
-	return st == "member", err
 }
 
 func (h *Hub) authorizeMembership(ops Ops, obj *clankmail.Object, stored *Obj, now int64) (func() error, error) {
@@ -648,7 +669,9 @@ func (h *Hub) authorizeMembership(ops Ops, obj *clankmail.Object, stored *Obj, n
 		return set(obj.From, ""), nil
 
 	case "admit":
-		if !isMod(ch, obj.From) {
+		if s, err := standingOf(ops, ch, obj.From, now); err != nil {
+			return nil, err
+		} else if !s.mod {
 			return nil, forbidden("only the owner or a mod may admit")
 		}
 		st, err := ops.Membership(ch.ID, str("member"))
@@ -662,7 +685,9 @@ func (h *Hub) authorizeMembership(ops Ops, obj *clankmail.Object, stored *Obj, n
 
 	case "ban":
 		m := str("member")
-		if !isMod(ch, obj.From) {
+		if s, err := standingOf(ops, ch, obj.From, now); err != nil {
+			return nil, err
+		} else if !s.mod {
 			return nil, forbidden("only the owner or a mod may ban")
 		}
 		if m == ch.Owner || (contains(ch.Mods, m) && obj.From != ch.Owner) {
@@ -707,7 +732,11 @@ func (h *Hub) authorizeMembership(ops Ops, obj *clankmail.Object, stored *Obj, n
 		if !ok {
 			return nil, forbidden("target is not a post in this channel")
 		}
-		if obj.From != author && !isMod(ch, obj.From) {
+		s, err := standingOf(ops, ch, obj.From, now)
+		if err != nil {
+			return nil, err
+		}
+		if s.banned || (obj.From != author && !s.mod) {
 			return nil, forbidden("only the owner, a mod or the author may remove a post")
 		}
 		return func() error { return ops.HideLog(ch.ID, str("target")) }, nil
@@ -773,13 +802,33 @@ func threadRoot(ops Ops, obj *clankmail.Object) (string, error) {
 		if err != nil || parent == nil || parent.Type != "msg" {
 			return "", err
 		}
-		p, err := clankmail.Verify(parent.Token)
-		if err != nil {
-			return "", nil
-		}
-		cur, fields = parent.ID, p.Fields
+		cur, fields = parent.ID, map[string]any{"re": storedFields(parent.Token).Re}
 	}
 	return "", nil
+}
+
+// stored is the part of an accepted msg payload the hub re-reads.
+type stored struct {
+	Re string   `json:"re"`
+	To []string `json:"to"`
+}
+
+// storedFields re-reads a token this hub verified when it accepted it. It
+// does NOT verify the signature again: that work was done once, at
+// acceptance, and repeating it per lookup (up to maxThreadDepth per reply,
+// under the submit lock) is pure cost. Never call it on an incoming token.
+func storedFields(token string) stored {
+	var m stored
+	parts := strings.Split(token, ".")
+	if len(parts) != 4 {
+		return m
+	}
+	b, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return m
+	}
+	json.Unmarshal(b, &m)
+	return m
 }
 
 // canPost enforces a channel's post policy (§7.1, §7.2) against key.
@@ -789,18 +838,18 @@ func canPost(ops Ops, ch *Channel, key string, now int64) error {
 	} else if b {
 		return forbidden("banned from this channel")
 	}
+	s, err := standingOf(ops, ch, key, now)
+	if err != nil {
+		return err
+	}
 	var ok bool
 	switch ch.Post {
 	case "anyone":
 		ok = true
 	case "members":
-		m, err := isMember(ops, ch, key)
-		if err != nil {
-			return err
-		}
-		ok = m
+		ok = s.member
 	case "mods":
-		ok = isMod(ch, key)
+		ok = s.mod
 	case "owner":
 		ok = key == ch.Owner
 	}
@@ -839,11 +888,7 @@ func queueFor(ops Ops, obj *clankmail.Object, recipient string) (string, error) 
 	} else if prev != nil && orig.Recv <= prev.EndedAt {
 		return "requests", nil
 	}
-	o, err := clankmail.Verify(orig.Token)
-	if err != nil {
-		return "requests", nil
-	}
-	if contains(strList(o.Fields["to"]), obj.From) {
+	if contains(storedFields(orig.Token).To, obj.From) {
 		return "inbox", nil
 	}
 	return "requests", nil
