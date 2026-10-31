@@ -459,6 +459,14 @@ func TestInboxCursorPaging(t *testing.T) {
 	}
 	wantErr(t, e.do("GET", "/v1/channels?sort=bogus", nil, ""), 400, EQuery)
 	wantErr(t, e.as(bob, "DELETE", "/v1/allow/k_nope", nil), 400, EQuery)
+	// A malformed request body is E_QUERY too (§8 error table).
+	for _, body := range []string{`not json`, `{"key":"k_nope"}`, `{}`} {
+		r := e.as(bob, "POST", "/v1/allow", []byte(body))
+		wantErr(t, r, 400, EQuery)
+		if !strings.Contains(r.str("detail"), "body must be") {
+			t.Fatalf("%s: wrong reason: %v", body, r.body)
+		}
+	}
 	// Inbox requires auth: no header is 401 E_AUTH.
 	wantErr(t, e.do("GET", "/v1/inbox?queue=inbox", nil, ""), 401, EAuth)
 }

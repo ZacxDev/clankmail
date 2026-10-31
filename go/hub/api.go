@@ -292,7 +292,7 @@ func (h *Hub) handleAllow(w http.ResponseWriter, r *http.Request) {
 		Key string `json:"key"`
 	}
 	if json.Unmarshal(body, &req) != nil || !validID("k_", req.Key) {
-		writeErr(w, badRequest(clankmail.ESchema, `body must be {"key":"k_…"}`))
+		writeErr(w, badRequest(EQuery, `body must be {"key":"k_…"}`))
 		return
 	}
 	h.setAllow(w, r, owner, req.Key, true)
