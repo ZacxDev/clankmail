@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
+	"math/big"
 	"strings"
 )
 
@@ -62,6 +63,44 @@ func decodeB64(s string) ([]byte, bool) {
 	return b, true
 }
 
+var (
+	fieldP = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+	// smallOrderY holds the y-coordinates of all 8 points of order dividing 8 (§2).
+	smallOrderY = []*big.Int{
+		big.NewInt(0),
+		big.NewInt(1),
+		new(big.Int).Sub(fieldP, big.NewInt(1)),
+		hexInt("05fc536d880238b13933c6d305acdfd5f098eff289f4c345b027b2c28f95e826"),
+		hexInt("7a03ac9277fdc74ec6cc392cfa53202a0f67100d760b3cba4fd84d3d706a17c7"),
+	}
+)
+
+func hexInt(h string) *big.Int {
+	n, _ := new(big.Int).SetString(h, 16)
+	return n
+}
+
+// validKey applies the §2 key validity rule: canonical y, not small order.
+// crypto/ed25519 accepts both kinds, and the identity point makes a key whose
+// signatures anyone can forge.
+func validKey(pub []byte) bool {
+	le := make([]byte, 32)
+	for i := range pub {
+		le[31-i] = pub[i]
+	}
+	le[0] &= 0x7f // clear the x sign bit (bit 255)
+	y := new(big.Int).SetBytes(le)
+	if y.Cmp(fieldP) >= 0 {
+		return false
+	}
+	for _, s := range smallOrderY {
+		if y.Cmp(s) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // KeyID returns the k_ id of an Ed25519 public key.
 func KeyID(pub ed25519.PublicKey) string { return "k_" + B32(pub) }
 
@@ -101,7 +140,7 @@ func Verify(token string) (*Object, error) {
 		return nil, fail(EFormat, "want v1.<signer>.<payload>.<signature>")
 	}
 	pub, ok := decodeB32(parts[1], ed25519.PublicKeySize)
-	if !ok {
+	if !ok || !validKey(pub) {
 		return nil, fail(EEncoding, "signer")
 	}
 	payload, ok := decodeB64(parts[2])

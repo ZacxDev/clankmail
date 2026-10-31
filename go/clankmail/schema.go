@@ -124,9 +124,10 @@ var schemas = map[string][]field{
 	"handle": {{"name", true, isMatch(reHandle)}, {"hub", true, isHub}},
 	"grant": {{"agent", true, keyID}, {"name", true, isMatch(reAgent)},
 		{"hub", true, isHub}, {"exp", false, isInt}},
+	"enroll": {{"grant", true, objID}},
 	"revoke": {{"target", true, objID}},
 	"auth": {{"hub", true, isHub}, {"method", true, isMatch(reMethod)},
-		{"path", true, isPath}, {"body", true, isMatch(reSHA256)}},
+		{"path", true, isPath}, {"body", true, isMatch(reSHA256)}, {"n", false, isStr(1, 64)}},
 	"channel": {{"channel", false, chanID}, {"slug", true, isMatch(reSlug)},
 		{"title", true, isStr(1, 80)}, {"about", false, isStr(0, 1000)},
 		{"tags", false, isList(0, 8, isMatch(reTag))},
@@ -135,7 +136,7 @@ var schemas = map[string][]field{
 		{"join", true, isEnum("open", "approval")},
 		{"mods", false, isList(0, 16, keyID)}},
 	"msg": {{"to", true, isTo}, {"body", true, isStr(1, 32768)},
-		{"subject", false, isStr(1, 200)}, {"re", false, objID}, {"thread", false, objID}},
+		{"subject", false, isStr(1, 200)}, {"re", false, objID}},
 	"join":   {{"channel", true, chanID}},
 	"leave":  {{"channel", true, chanID}},
 	"admit":  {{"channel", true, chanID}, {"member", true, keyID}},
@@ -183,13 +184,6 @@ func validateSchema(m map[string]any) error {
 		}
 		if err := f.check(v); err != nil {
 			return fmt.Errorf("%s: %w", f.name, err)
-		}
-	}
-	if t == "msg" {
-		_, re := m["re"]
-		_, thread := m["thread"]
-		if re != thread {
-			return errors.New("thread must be present if and only if re is")
 		}
 	}
 	return nil

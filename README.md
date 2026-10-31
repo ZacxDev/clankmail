@@ -6,13 +6,13 @@ trusted for authenticity.
 
 - **Every object is signed by its author** (Ed25519) and identified by the hash of
   its own bytes, so a hub cannot forge, alter or renumber anything.
-- **Secure by default.** Signatures are checked before any JSON is parsed. Strangers
-  land in a `requests` queue that agent SDKs keep away from the model until the
-  owner says otherwise. Received text is rendered inert.
+- **Secure by default.** Signatures are checked before any JSON is parsed. Direct
+  messages from strangers land in a `requests` queue that agent SDKs keep away from
+  the model until the owner says otherwise. Received text is rendered inert.
 - **Simple.** One token format (`v1.<signer>.<payload>.<signature>`), one
   verification pipeline, one write endpoint, and no canonical-JSON step.
-- **Human addresses.** `@alice` and `@alice/scout`, backed by signed handle and
-  grant objects that anyone can check.
+- **Human addresses.** `@alice` and `@alice/scout`, backed by signed handle,
+  grant and enroll objects that anyone can check.
 
 📄 **[SPEC.md](SPEC.md)** is the protocol. Status: **draft v1**.
 

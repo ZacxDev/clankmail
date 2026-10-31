@@ -51,8 +51,26 @@ def dec_b64(s: str):
     return _canon(s, lambda x: base64.urlsafe_b64decode(x + "=" * (-len(x) % 4)), b64)
 
 
+FIELD_P = 2**255 - 19
+# §2 key validity rule: the y-coordinates of every point of order dividing 8.
+SMALL_ORDER_Y = {
+    0, 1, FIELD_P - 1,
+    0x05fc536d880238b13933c6d305acdfd5f098eff289f4c345b027b2c28f95e826,
+    0x7a03ac9277fdc74ec6cc392cfa53202a0f67100d760b3cba4fd84d3d706a17c7,
+}
+
+
+def valid_key(pub: bytes) -> bool:
+    y = int.from_bytes(pub, "little") & ((1 << 255) - 1)
+    return y < FIELD_P and y not in SMALL_ORDER_Y
+
+
 def object_id(payload: bytes) -> str:
     return "m_" + b32(hashlib.sha256(payload).digest())
+
+
+def channel_id(genesis_payload: bytes) -> str:
+    return "c_" + object_id(genesis_payload)[2:]
 
 
 def sign(seed: bytes, payload: bytes) -> str:
@@ -161,10 +179,11 @@ SCHEMAS = {
     "handle": {"name": (R, _re(r"[a-z0-9][a-z0-9-]{1,30}")), "hub": (R, _hub)},
     "grant": {"agent": (R, KEY), "name": (R, _re(r"[a-z0-9][a-z0-9-]{0,31}")),
               "hub": (R, _hub), "exp": (O, _isint)},
+    "enroll": {"grant": (R, OBJ)},
     "revoke": {"target": (R, OBJ)},
     "auth": {"hub": (R, _hub), "method": (R, _re(r"[A-Z]{1,16}")),
              "path": (R, lambda v: isinstance(v, str) and v.startswith("/") and len(v.encode()) <= 2048),
-             "body": (R, _re(r"[0-9a-f]{64}"))},
+             "body": (R, _re(r"[0-9a-f]{64}")), "n": (O, _str(1, 64))},
     "channel": {"channel": (O, CHAN), "slug": (R, _re(r"[a-z0-9][a-z0-9-]{1,31}")),
                 "title": (R, _str(1, 80)), "about": (O, _str(0, 1000)),
                 "tags": (O, _list(0, 8, _re(r"[a-z0-9][a-z0-9-]{0,23}"))),
@@ -173,7 +192,7 @@ SCHEMAS = {
                 "join": (R, _enum("open", "approval")),
                 "mods": (O, _list(0, 16, KEY))},
     "msg": {"to": (R, _to), "body": (R, _str(1, 32768)), "subject": (O, _str(1, 200)),
-            "re": (O, OBJ), "thread": (O, OBJ)},
+            "re": (O, OBJ)},
     "join": {"channel": (R, CHAN)},
     "leave": {"channel": (R, CHAN)},
     "admit": {"channel": (R, CHAN), "member": (R, KEY)},
@@ -195,8 +214,6 @@ def validate_schema(m: dict):
                 raise ValueError(f"missing {name}")
         elif not check(m[name]):
             raise ValueError(f"invalid {name}")
-    if t == "msg" and (("re" in m) != ("thread" in m)):
-        raise ValueError("thread iff re")
 
 
 # ---------------------------------------------------------------- pipeline
@@ -209,7 +226,7 @@ def verify(token: str) -> dict:
     if len(parts) != 4 or parts[0] != "v1":
         raise ClankMailError("E_FORMAT")
     pub, payload, sig = dec_b32(parts[1]), dec_b64(parts[2]), dec_b64(parts[3])
-    if pub is None or len(pub) != 32 or payload is None or sig is None or len(sig) != 64:
+    if pub is None or len(pub) != 32 or not valid_key(pub) or payload is None or sig is None or len(sig) != 64:
         raise ClankMailError("E_ENCODING")
     try:
         Ed25519PublicKey.from_public_bytes(pub).verify(sig, DOMAIN + payload)

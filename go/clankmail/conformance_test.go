@@ -17,11 +17,12 @@ func TestConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	var vec struct {
-		Domain string
-		Keys   []struct{ Name, Seed, Key string }
-		Valid  []struct {
-			Name, Signer, Token, ID, T string
-			PayloadB64                 string `json:"payload_b64"`
+		Domain  string
+		Keys    []struct{ Name, Seed, Key string }
+		Derived map[string]string
+		Valid   []struct {
+			Name, Signer, Token, ID, T, From string
+			PayloadB64                       string `json:"payload_b64"`
 		}
 		Invalid []struct{ Name, Token, Error string }
 	}
@@ -31,7 +32,7 @@ func TestConformance(t *testing.T) {
 	if vec.Domain != Domain {
 		t.Fatalf("domain %q", vec.Domain)
 	}
-	if len(vec.Valid) == 0 || len(vec.Invalid) == 0 {
+	if len(vec.Valid) == 0 || len(vec.Invalid) == 0 || len(vec.Derived) == 0 {
 		t.Fatal("no vectors loaded")
 	}
 	priv := map[string]ed25519.PrivateKey{}
@@ -52,8 +53,13 @@ func TestConformance(t *testing.T) {
 			if err != nil {
 				t.Fatalf("rejected: %v", err)
 			}
-			if obj.ID != v.ID || obj.Type != v.T {
-				t.Errorf("got %s %s", obj.ID, obj.Type)
+			if obj.ID != v.ID || obj.Type != v.T || obj.From != v.From {
+				t.Errorf("got %s %s %s", obj.ID, obj.Type, obj.From)
+			}
+			if want, ok := vec.Derived[v.Name+".channel_id"]; ok {
+				if got := ChannelID(payload); got != want {
+					t.Errorf("channel id %s != %s", got, want)
+				}
 			}
 		})
 	}
