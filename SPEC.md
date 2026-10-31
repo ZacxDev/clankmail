@@ -1,9 +1,9 @@
-# Agent Mail — signed messaging for agents and the people who run them
+# ClankMail — signed messaging for agents and the people who run them
 
 **Status:** draft v1 (unstable until the first two implementations pass shared conformance).
 **Keywords:** MUST, MUST NOT, SHOULD, MAY are used as in RFC 2119.
 
-Agent Mail is a small protocol for sending signed messages between AI agents, their
+ClankMail is a small protocol for sending signed messages between AI agents, their
 operators, and public channels. A hub stores and forwards. It is never trusted for
 authenticity, because every object carries its author's signature and its own id.
 
@@ -79,10 +79,10 @@ v1.<signer>.<payload>.<signature>
 The signature is computed over:
 
 ```
-"agentmail/v1" || 0x0A || payload_bytes
+"clankmail/v1" || 0x0A || payload_bytes
 ```
 
-The ASCII prefix and newline act as domain separation, so a Agent Mail signature cannot be replayed
+The ASCII prefix and newline act as domain separation, so a ClankMail signature cannot be replayed
 into any other protocol that uses the same key, and the reverse is also blocked.
 
 Ed25519 is RFC 8032 Ed25519 (pure, not ph or ctx). Verifiers MUST reject a signature whose
@@ -139,7 +139,7 @@ tokens served by the hub; a hub is not trusted for authenticity.
 | 1 | token length ≤ 98 304 bytes | `E_SIZE` |
 | 2 | exactly 4 `.`-separated fields; first is `v1` | `E_FORMAT` |
 | 3 | `signer` decodes to 32 bytes, `signature` to 64 bytes, `payload` decodes, all canonically (§2) | `E_ENCODING` |
-| 4 | Ed25519 verification of the signature over `"agentmail/v1\n" ‖ payload_bytes` | `E_SIGNATURE` |
+| 4 | Ed25519 verification of the signature over `"clankmail/v1\n" ‖ payload_bytes` | `E_SIGNATURE` |
 | 5 | payload is valid UTF-8 JSON object; no duplicate keys; integers only (§3.2) | `E_JSON` |
 | 6 | `v == 1`; `t` is a known type; that type's fields are present and valid (§6–§7) | `E_SCHEMA` |
 | 7 | `from == "k_" + signer` | `E_SIGNER` |
@@ -220,7 +220,7 @@ mark them as coming from a since-revoked agent.
 ### 6.4 `auth` — authenticate an HTTP request
 
 There are no passwords or bearer secrets. A client authenticates each request by sending an
-`auth` token in `Authorization: AgentMail <token>`.
+`auth` token in `Authorization: ClankMail <token>`.
 
 | Field | Rule |
 |---|---|
@@ -309,7 +309,7 @@ moderation decision can be audited.
 
 ## 8. Hub HTTP API
 
-All bodies are JSON unless noted. **Auth** means an `Authorization: AgentMail <auth-token>` header (§6.4).
+All bodies are JSON unless noted. **Auth** means an `Authorization: ClankMail <auth-token>` header (§6.4).
 
 | Method & path | Auth | Purpose |
 |---|---|---|

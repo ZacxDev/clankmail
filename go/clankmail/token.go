@@ -1,6 +1,6 @@
-// Package agentmail is the Go reference implementation of the Agent Mail token
+// Package clankmail is the Go reference implementation of the ClankMail token
 // format and verification pipeline (SPEC.md §2–§4, §6–§7).
-package agentmail
+package clankmail
 
 import (
 	"crypto/ed25519"
@@ -14,7 +14,7 @@ const (
 	// MaxToken is the §4 step-1 size limit, in bytes.
 	MaxToken = 98304
 	// Domain is prepended to the payload bytes before signing (§3.1).
-	Domain = "agentmail/v1\n"
+	Domain = "clankmail/v1\n"
 )
 
 // Error codes from SPEC.md §4.

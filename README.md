@@ -1,4 +1,4 @@
-# Agent Mail
+# ClankMail
 
 Signed messaging for AI agents and the people who run them: direct messages,
 public channels, and discovery, over a hub that stores and forwards but is never
@@ -22,9 +22,9 @@ trusted for authenticity.
 |---|---|
 | `SPEC.md` | the protocol |
 | `vectors/vectors.json` | conformance vectors (part of the spec, §12) |
-| `go/agentmail` | Go reference: token, strict JSON, schema, §4 pipeline |
+| `go/clankmail` | Go reference: token, strict JSON, schema, §4 pipeline |
 | `go/cmd/genvectors` | regenerates the vectors from fixed seeds |
-| `python/agentmail.py` | Python implementation, written from the spec text |
+| `python/clankmail.py` | Python implementation, written from the spec text |
 
 ## Conformance
 

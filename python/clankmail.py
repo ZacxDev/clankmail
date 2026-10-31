@@ -1,4 +1,4 @@
-"""Agent Mail token verification and signing (SPEC.md §2–§4, §6–§7).
+"""ClankMail token verification and signing (SPEC.md §2–§4, §6–§7).
 
 Written from SPEC.md, independently of the Go reference, so that shared
 conformance can catch places where the spec is accidentally Go-shaped.
@@ -13,12 +13,12 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 MAX_TOKEN = 98304
-DOMAIN = b"agentmail/v1\n"
+DOMAIN = b"clankmail/v1\n"
 MAX_SAFE_INT = 2**53 - 1
 MAX_DEPTH = 16
 
 
-class AgentMailError(Exception):
+class ClankMailError(Exception):
     def __init__(self, code, detail=""):
         super().__init__(f"{code}: {detail}")
         self.code = code
@@ -202,27 +202,27 @@ def validate_schema(m: dict):
 # ---------------------------------------------------------------- pipeline
 
 def verify(token: str) -> dict:
-    """Run the §4 pipeline; return {'id','t','from','fields'} or raise AgentMailError."""
+    """Run the §4 pipeline; return {'id','t','from','fields'} or raise ClankMailError."""
     if len(token.encode()) > MAX_TOKEN:
-        raise AgentMailError("E_SIZE")
+        raise ClankMailError("E_SIZE")
     parts = token.split(".")
     if len(parts) != 4 or parts[0] != "v1":
-        raise AgentMailError("E_FORMAT")
+        raise ClankMailError("E_FORMAT")
     pub, payload, sig = dec_b32(parts[1]), dec_b64(parts[2]), dec_b64(parts[3])
     if pub is None or len(pub) != 32 or payload is None or sig is None or len(sig) != 64:
-        raise AgentMailError("E_ENCODING")
+        raise ClankMailError("E_ENCODING")
     try:
         Ed25519PublicKey.from_public_bytes(pub).verify(sig, DOMAIN + payload)
     except (InvalidSignature, ValueError) as e:
-        raise AgentMailError("E_SIGNATURE", str(e))
+        raise ClankMailError("E_SIGNATURE", str(e))
     try:
         fields = parse_strict(payload)
     except (ValueError, UnicodeDecodeError, RecursionError) as e:
-        raise AgentMailError("E_JSON", str(e))
+        raise ClankMailError("E_JSON", str(e))
     try:
         validate_schema(fields)
     except ValueError as e:
-        raise AgentMailError("E_SCHEMA", str(e))
+        raise ClankMailError("E_SCHEMA", str(e))
     if fields["from"] != "k_" + parts[1]:
-        raise AgentMailError("E_SIGNER")
+        raise ClankMailError("E_SIGNER")
     return {"id": object_id(payload), "t": fields["t"], "from": fields["from"], "fields": fields}

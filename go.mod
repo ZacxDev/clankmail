@@ -1,3 +1,3 @@
-module github.com/ZacxDev/agent-mail
+module github.com/ZacxDev/clankmail
 
 go 1.22

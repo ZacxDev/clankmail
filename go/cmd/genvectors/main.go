@@ -15,7 +15,7 @@ import (
 	"os"
 	"strings"
 
-	am "github.com/ZacxDev/agent-mail/go/agentmail"
+	am "github.com/ZacxDev/clankmail/go/clankmail"
 )
 
 const ts = "1767225600000" // 2026-01-01T00:00:00Z
@@ -56,7 +56,7 @@ type file struct {
 var keys = map[string]*key{}
 
 func mkKey(name string) *key {
-	seed := sha256.Sum256([]byte("agentmail-vectors/" + name))
+	seed := sha256.Sum256([]byte("clankmail-vectors/" + name))
 	priv := ed25519.NewKeyFromSeed(seed[:])
 	k := &key{Name: name, Seed: hex.EncodeToString(seed[:]),
 		ID: am.KeyID(priv.Public().(ed25519.PublicKey)), priv: priv}
@@ -71,7 +71,7 @@ func parts(tok string) []string { return strings.Split(tok, ".") }
 func join(p []string) string { return strings.Join(p, ".") }
 
 func main() {
-	out := file{Spec: "agentmail/v1", Domain: am.Domain, Derived: map[string]string{}}
+	out := file{Spec: "clankmail/v1", Domain: am.Domain, Derived: map[string]string{}}
 	alice, scout, bob, carol := mkKey("alice"), mkKey("scout"), mkKey("bob"), mkKey("carol")
 	out.Keys = []*key{alice, scout, bob, carol}
 
@@ -157,7 +157,7 @@ func main() {
 	addInvalid("sig-bit-flip", "one bit of R flipped", join([]string{p[0], p[1], p[2], am.B64(flip)}), am.ESignature)
 	other := parts(sign(alice, string(mustB64(p[2]))))
 	addInvalid("sig-wrong-key", "signed by alice, signer field says bob", join([]string{p[0], p[1], p[2], other[3]}), am.ESignature)
-	addInvalid("sig-no-domain-prefix", "signature over the bare payload, without \"agentmail/v1\\n\"", join([]string{p[0], p[1], p[2], am.B64(ed25519.Sign(bob.priv, mustB64(p[2])))}), am.ESignature)
+	addInvalid("sig-no-domain-prefix", "signature over the bare payload, without \"clankmail/v1\\n\"", join([]string{p[0], p[1], p[2], am.B64(ed25519.Sign(bob.priv, mustB64(p[2])))}), am.ESignature)
 	addInvalid("sig-s-not-reduced", "S replaced by S+L: same point equation, non-canonical scalar", join([]string{p[0], p[1], p[2], am.B64(malleate(sig))}), am.ESignature)
 	badJSON := am.B64([]byte(`{"v":1,`))
 	addInvalid("sig-before-json", "bad signature AND bad JSON: the signature is checked first", join([]string{p[0], p[1], badJSON, p[3]}), am.ESignature)

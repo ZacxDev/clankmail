@@ -1,4 +1,4 @@
-package agentmail
+package clankmail
 
 import (
 	"errors"

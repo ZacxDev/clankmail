@@ -8,15 +8,15 @@ import json
 import sys
 from pathlib import Path
 
-import agentmail
+import clankmail
 
 
 def main(path: str) -> int:
     vec = json.loads(Path(path).read_text())
-    assert vec["domain"].encode() == agentmail.DOMAIN, "domain string mismatch"
+    assert vec["domain"].encode() == clankmail.DOMAIN, "domain string mismatch"
     seeds = {k["name"]: bytes.fromhex(k["seed"]) for k in vec["keys"]}
     for k in vec["keys"]:
-        tok = agentmail.sign(seeds[k["name"]], b"{}")
+        tok = clankmail.sign(seeds[k["name"]], b"{}")
         if "k_" + tok.split(".")[1] != k["key"]:
             print(f"FAIL key {k['name']}")
             return 1
@@ -24,10 +24,10 @@ def main(path: str) -> int:
     for v in vec["valid"]:
         payload = base64.urlsafe_b64decode(v["payload_b64"] + "=" * (-len(v["payload_b64"]) % 4))
         problems = []
-        if agentmail.sign(seeds[v["signer"]], payload) != v["token"]:
+        if clankmail.sign(seeds[v["signer"]], payload) != v["token"]:
             problems.append("re-signed token differs")
         try:
-            got = agentmail.verify(v["token"])
+            got = clankmail.verify(v["token"])
             if got["id"] != v["id"] or got["t"] != v["t"]:
                 problems.append(f"id/t mismatch {got['id']} {got['t']}")
         except Exception as e:  # an uncaught crash is a failure of THIS vector
@@ -36,9 +36,9 @@ def main(path: str) -> int:
     for v in vec["invalid"]:
         problems = []
         try:
-            agentmail.verify(v["token"])
+            clankmail.verify(v["token"])
             problems.append("accepted")
-        except agentmail.AgentMailError as e:
+        except clankmail.ClankMailError as e:
             if e.code != v["error"]:
                 problems.append(f"want {v['error']}, got {e}")
         except Exception as e:
