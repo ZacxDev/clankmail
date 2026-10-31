@@ -123,7 +123,10 @@ func main() {
 	addValid("msg-multi-recipient", scout, hdr("msg", scout)+fmt.Sprintf(`,"to":[%q,%q],"body":"to both"}`, bob.ID, carol.ID))
 	// No canonicalisation: reordered keys + whitespace + an unknown field are valid as sent.
 	addValid("msg-no-canonical-form", bob, fmt.Sprintf("{\n  \"body\": \"order and spacing are the sender's\",\n  \"x-client\": {\"name\": \"demo\"},\n  \"to\": [%q], \"ts\": %s, \"from\": %q, \"t\": \"msg\", \"v\": 1\n}\n", alice.ID, ts, bob.ID))
-	addValid("msg-unicode-escapes", bob, hdr("msg", bob)+fmt.Sprintf(`,"to":[%q],"body":"café 😀 — ✓"}`, alice.ID))
+	addValid("msg-unicode-raw", bob, hdr("msg", bob)+fmt.Sprintf(`,"to":[%q],"body":"café 😀 — ✓"}`, alice.ID))
+	// The backslashes below are literal: the payload carries \u escapes, including a
+	// surrogate pair, which is the accepted side of the §3.2 surrogate rule.
+	addValid("msg-unicode-escapes", bob, hdr("msg", bob)+fmt.Sprintf(`,"to":[%q],"body":"caf\u00e9 \ud83d\ude00 \u2014 \u2713"}`, alice.ID))
 	addValid("msg-body-max", bob, hdr("msg", bob)+fmt.Sprintf(`,"to":[%q],"body":"%s"}`, alice.ID, strings.Repeat("a", 32768)))
 	addValid("msg-ts-max", bob, fmt.Sprintf(`{"v":1,"t":"msg","from":%q,"ts":9007199254740991,"to":[%q],"body":"x"}`, bob.ID, alice.ID))
 
@@ -142,7 +145,7 @@ func main() {
 	addInvalid("enc-signer-uppercase", "base32 must be lowercase", join([]string{p[0], strings.ToUpper(p[1]), p[2], p[3]}), am.EEncoding)
 	addInvalid("enc-signer-short", "51 base32 chars", join([]string{p[0], p[1][:51], p[2], p[3]}), am.EEncoding)
 	addInvalid("enc-signer-trailing-bits", "non-zero unused bits in the last base32 char", join([]string{p[0], bumpLast(p[1], "abcdefghijklmnopqrstuvwxyz234567"), p[2], p[3]}), am.EEncoding)
-	addInvalid("enc-payload-padded", "base64url padding is not allowed", join([]string{p[0], p[1], p[2] + "=", p[3]}), am.EEncoding)
+	addInvalid("enc-payload-padded", "correct base64url padding is still not allowed", join([]string{p[0], p[1], p[2] + strings.Repeat("=", (4-len(p[2])%4)%4), p[3]}), am.EEncoding)
 	addInvalid("enc-payload-newline", "a newline inside base64url (some decoders skip it)", join([]string{p[0], p[1], p[2][:10] + "\n" + p[2][10:], p[3]}), am.EEncoding)
 	addInvalid("enc-payload-std-alphabet", "'+' from the standard alphabet", join([]string{p[0], p[1], "+" + p[2][1:], p[3]}), am.EEncoding)
 	// A payload whose length is not a multiple of 3 has unused bits in its last char.
@@ -254,6 +257,53 @@ func main() {
 		addInvalid(w.name, w.why, forgeSmallOrder(w.pub, w.order), am.EEncoding)
 	}
 
+	// ---- gaps found by reading the spec against the vectors (one each side of a rule).
+	pg := parts(base)
+	addInvalid("enc-signer-long", "53 base32 chars", join([]string{pg[0], pg[1] + "a", pg[2], pg[3]}), am.EEncoding)
+	addInvalid("enc-signature-trailing-bits", "non-zero unused bits in the last base64url char of the signature", join([]string{pg[0], pg[1], pg[2], bumpLast(pg[3], b64a)}), am.EEncoding)
+	addInvalid("enc-signature-padded", "correctly padded signature (\"==\") is still not allowed", join([]string{pg[0], pg[1], pg[2], pg[3] + "=="}), am.EEncoding)
+	addInvalid("enc-signature-long", "65-byte signature", join([]string{pg[0], pg[1], pg[2], am.B64(append(mustB64(pg[3]), 0))}), am.EEncoding)
+	addInvalid("key-not-on-curve", "canonical, not small order, but no curve point has this y: verification fails", notOnCurve(), am.ESignature)
+
+	j("json-empty-payload", "an empty payload is not a JSON object", "")
+	j("json-duplicate-key-escaped", "\"body\" and \"b\\u006fdy\" are the same key once unescaped", h+","+to+`,"body":"x","b\u006fdy":"y"}`)
+	j("json-negative-zero", "-0 carries a sign", h+","+to+`,"body":"x","x":-0}`)
+	j("json-raw-control-char", "a raw tab inside a string must be escaped", h+","+to+`,"body":"a`+"\t"+`b"}`)
+	addValid("json-zero-and-escapes", bob, h+","+to+`,"body":"tab\there \"quoted\" back\\slash \/ \u0000","x":0}`)
+
+	s("schema-v-missing", "v absent", fmt.Sprintf(`{"t":"msg","from":%q,"ts":%s,%s,"body":"x"}`, bob.ID, ts, to))
+	s("schema-v-string", "v as a string", fmt.Sprintf(`{"v":"1","t":"msg","from":%q,"ts":%s,%s,"body":"x"}`, bob.ID, ts, to))
+	s("schema-t-missing", "t absent", fmt.Sprintf(`{"v":1,"from":%q,"ts":%s,%s,"body":"x"}`, bob.ID, ts, to))
+	s("schema-to-string", "to must be an array, not a bare key id", h+fmt.Sprintf(`,"to":%q,"body":"x"}`, alice.ID))
+	s("schema-to-over", "33 recipients", h+`,"to":[`+modList(33)+`],"body":"x"}`)
+	addValid("msg-to-at-limit", bob, h+`,"to":[`+modList(32)+`],"body":"x"}`)
+	s("schema-subject-empty", "subject of 0 bytes", h+","+to+`,"body":"x","subject":""}`)
+	addValid("msg-subject-at-limit", bob, h+","+to+`,"body":"x","subject":"`+strings.Repeat("s", 200)+`"}`)
+	s("schema-handle-name-short", "1-char handle (minimum is 2)", hdr("handle", bob)+`,"name":"b","hub":"hub.example"}`)
+	s("schema-handle-name-long", "32-char handle (maximum is 31)", hdr("handle", bob)+`,"name":"`+strings.Repeat("b", 32)+`","hub":"hub.example"}`)
+	s("schema-handle-name-newline", "a trailing newline is not part of a name (regex $ must not match before it)", hdr("handle", bob)+`,"name":"bob\n","hub":"hub.example"}`)
+	addValid("handle-name-at-limits", bob, hdr("handle", bob)+`,"name":"`+strings.Repeat("b", 31)+`","hub":"hub.example"}`)
+	addValid("handle-name-min", carol, hdr("handle", carol)+`,"name":"cc","hub":"hub.example"}`)
+	s("schema-grant-name-long", "33-char agent name (maximum is 32)", hdr("grant", alice)+fmt.Sprintf(`,"agent":%q,"name":"%s","hub":"hub.example"}`, scout.ID, strings.Repeat("a", 33)))
+	s("schema-grant-name-empty", "empty agent name", hdr("grant", alice)+fmt.Sprintf(`,"agent":%q,"name":"","hub":"hub.example"}`, scout.ID))
+	addValid("grant-name-at-limits", alice, hdr("grant", alice)+fmt.Sprintf(`,"agent":%q,"name":"%s","hub":"hub.example"}`, carol.ID, strings.Repeat("a", 32)))
+	s("schema-hub-uppercase", "hub names are lowercase", hdr("handle", bob)+`,"name":"bob","hub":"Hub.example"}`)
+	s("schema-hub-no-dot", "hub names need a dot", hdr("handle", bob)+`,"name":"bob","hub":"localhost"}`)
+	s("schema-hub-trailing-dot", "no trailing dot", hdr("handle", bob)+`,"name":"bob","hub":"hub.example."}`)
+	s("schema-channel-bad-post", "unknown post policy", hdr("channel", bob)+`,"slug":"bob","title":"B","read":"public","post":"everyone","join":"open"}`)
+	s("schema-channel-bad-join", "unknown join policy", hdr("channel", bob)+`,"slug":"bob","title":"B","read":"public","post":"owner","join":"invite"}`)
+	s("schema-channel-about-over", "about of 1001 bytes", hdr("channel", bob)+`,"slug":"bob","title":"B","about":"`+strings.Repeat("a", 1001)+`","read":"public","post":"owner","join":"open"}`)
+	s("schema-channel-tag-duplicate", "the same tag twice", hdr("channel", bob)+`,"slug":"bob","title":"B","tags":["a","a"],"read":"public","post":"owner","join":"open"}`)
+	s("schema-channel-tag-long", "tag of 25 chars", hdr("channel", bob)+`,"slug":"bob","title":"B","tags":["`+strings.Repeat("t", 25)+`"],"read":"public","post":"owner","join":"open"}`)
+	s("schema-channel-title-empty", "empty title", hdr("channel", bob)+`,"slug":"bob","title":"","read":"public","post":"owner","join":"open"}`)
+	addValid("channel-other-limits", bob, hdr("channel", bob)+`,"slug":"`+strings.Repeat("s", 32)+`","title":"B","about":"`+strings.Repeat("a", 1000)+`","tags":["a","b","c","d","e","f","g","`+strings.Repeat("t", 24)+`"],"read":"public","post":"anyone","join":"approval"}`)
+	s("schema-ban-until-string", "until must be an integer", hdr("ban", alice)+fmt.Sprintf(`,"channel":%q,"member":%q,"until":"tomorrow"}`, ch, bob.ID))
+	s("schema-join-channel-not-id", "channel is not a c_ id", hdr("join", bob)+`,"channel":"#llm-evals"}`)
+	s("schema-auth-path-relative", "path must start with /", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"v1/inbox","body":%q}`, emptySHA))
+	s("schema-auth-method-long", "method of 17 letters", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"%s","path":"/","body":%q}`, strings.Repeat("G", 17), emptySHA))
+	s("schema-auth-body-short", "63 hex chars", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"/","body":%q}`, emptySHA[:63]))
+	addValid("auth-nonce-min", bob, hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"%s","path":"/","body":%q,"n":"n"}`, strings.Repeat("G", 16), emptySHA))
+
 	// ---- E_SIGNER
 	addInvalid("signer-mismatch", "valid object claiming from=bob, signed by alice", sign(alice, h+","+to+`,"body":"x"}`), am.ESigner)
 
@@ -309,6 +359,28 @@ func forgeSmallOrder(pub []byte, order int64) string {
 		}
 		k := new(big.Int).Mod(new(big.Int).SetBytes(rev), L)
 		if new(big.Int).Mod(k, big.NewInt(order)).Sign() == 0 {
+			return "v1." + am.B32(pub) + "." + am.B64([]byte(payload)) + "." + am.B64(sig)
+		}
+	}
+}
+
+// notOnCurve signs nothing: it builds a token whose signer y is canonical and not
+// small order, but has no x on the curve, so Ed25519 verification must fail.
+func notOnCurve() string {
+	p := fieldP()
+	d := new(big.Int).Mod(new(big.Int).Mul(big.NewInt(-121665), new(big.Int).ModInverse(big.NewInt(121666), p)), p)
+	exp := new(big.Int).Rsh(new(big.Int).Sub(p, big.NewInt(1)), 1) // Euler's criterion
+	for y := int64(2); ; y++ {
+		Y := big.NewInt(y)
+		y2 := new(big.Int).Mul(Y, Y)
+		u := new(big.Int).Mod(new(big.Int).Sub(y2, big.NewInt(1)), p)
+		v := new(big.Int).Mod(new(big.Int).Add(new(big.Int).Mul(d, y2), big.NewInt(1)), p)
+		x2 := new(big.Int).Mod(new(big.Int).Mul(u, new(big.Int).ModInverse(v, p)), p)
+		if new(big.Int).Exp(x2, exp, p).Cmp(new(big.Int).Sub(p, big.NewInt(1))) == 0 {
+			pub := leInt(Y)
+			payload := fmt.Sprintf(`{"v":1,"t":"handle","from":%q,"ts":%s,"name":"nocurve","hub":"hub.example"}`, am.KeyID(pub), ts)
+			sig := make([]byte, 64)
+			sig[0] = 1 // R = identity encoding, S = 0
 			return "v1." + am.B32(pub) + "." + am.B64([]byte(payload)) + "." + am.B64(sig)
 		}
 	}
