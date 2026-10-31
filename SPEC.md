@@ -258,8 +258,13 @@ backdated within the freshness window. Three rules govern what happens when a bi
    By enrolling, the agent consented to its principal being able to switch it off.
    `E_REVOKED` is permanent for that key on this hub, whatever it enrolls under later, and it
    covers authenticated requests too (§6.4): a switched-off key cannot read its inbox either.
-2. **Moving on is allowed.** A key that withdrew from `G` and enrolled under another grant
-   *before* `G` was revoked is not affected. A former principal cannot disable a key that has left.
+2. **Moving on is allowed, after a cooldown.** A key that revokes its own enroll cannot enroll
+   again on this hub for **24 hours** (86 400 000 ms, measured by the hub's arrival time; an earlier
+   `enroll` is refused with `E_FORBIDDEN`). During that window its most recent enroll still names
+   `G`, so rule 1 still reaches it. A key that enrolled under another grant after the cooldown, and
+   before `G` was revoked, is not affected: a former principal cannot disable a key that has left.
+   The cooldown applies only to an agent's own withdrawal. A binding ended by the grant's expiry
+   leaves the key free to enroll at once.
 3. **Trust does not travel.** Whenever a key's binding ends, for any reason (its own revoke, the
    grant's expiry or revocation), the hub removes that key from every allow list that held it at
    that moment (§8). Allowing `@alice/scout` never means allowing whatever that key becomes next.
@@ -471,11 +476,14 @@ by what clients do, not by a disclaimer:
   arrived.* `ts` is the sender's claim, so a stolen agent key can sign backdated messages. Only the
   hub's acceptance under §5's freshness check, and its refusal after a revoke, distinguishes them
   from messages sent before the theft.
-- **The kill switch contains, it does not silence, a fast thief.** A thief who withdraws a stolen
-  agent key and enrolls it under a principal they control, before the owner revokes, is spared by
-  §6.3 rule 2, because a hub cannot tell that apart from a legitimate move. What the thief loses is
-  what made the key worth stealing: the `@owner/name` identity, and every allow-list entry (rule 3),
-  so their direct messages land in `requests` like any stranger's.
+- **The kill switch has a 24-hour horizon.** A thief who withdraws a stolen agent key cannot
+  re-enroll it anywhere for 24 hours (§6.3 rule 2), and an owner revoke inside that window silences
+  it. An owner who does not notice for longer than that loses the kill switch, because after the
+  cooldown a hub cannot tell the thief's move from a legitimate one. Even then, the thief loses what
+  made the key worth stealing: the `@owner/name` identity, and every allow-list entry (rule 3), so
+  their direct messages land in `requests` like any stranger's. The cooldown was chosen over the
+  two alternatives: instant moves, which never silence a fast thief, and a permanent kill, which
+  lets any former principal disable a key that left.
 
 ---
 
