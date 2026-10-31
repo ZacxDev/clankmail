@@ -278,6 +278,16 @@
       "from": "k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq"
     },
     {
+      "name": "auth-nonce-at-limit",
+      "signer": "bob",
+      "payload": "{\"v\":1,\"t\":\"auth\",\"from\":\"k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq\",\"ts\":1767225600000,\"hub\":\"hub.example\",\"method\":\"GET\",\"path\":\"/\",\"body\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"n\":\"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\"}",
+      "payload_b64": "eyJ2IjoxLCJ0IjoiYXV0aCIsImZyb20iOiJrX3JhaGZpNmZraXdsbXVqbTdja2ludnVmbXc1c255bWx6b3RzeGFuN2Y0ejd6dGRteG1hY3EiLCJ0cyI6MTc2NzIyNTYwMDAwMCwiaHViIjoiaHViLmV4YW1wbGUiLCJtZXRob2QiOiJHRVQiLCJwYXRoIjoiLyIsImJvZHkiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibiI6Im5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm4ifQ",
+      "token": "v1.rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq.eyJ2IjoxLCJ0IjoiYXV0aCIsImZyb20iOiJrX3JhaGZpNmZraXdsbXVqbTdja2ludnVmbXc1c255bWx6b3RzeGFuN2Y0ejd6dGRteG1hY3EiLCJ0cyI6MTc2NzIyNTYwMDAwMCwiaHViIjoiaHViLmV4YW1wbGUiLCJtZXRob2QiOiJHRVQiLCJwYXRoIjoiLyIsImJvZHkiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibiI6Im5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm4ifQ.AGLVDIqegLna2Xfd72gL3UkYeYYjqJMTdOFFApgmVkK8Oni2ZbSb_g_NJ5RGxFu243y_bjALp4gPYRFcxZbGBA",
+      "id": "m_5qlxbegvd5ue2balwvh3j74ulqwcnarbux2ujzrynhrqtgao6yba",
+      "t": "auth",
+      "from": "k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq"
+    },
+    {
       "name": "channel-at-limits",
       "signer": "bob",
       "payload": "{\"v\":1,\"t\":\"channel\",\"from\":\"k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq\",\"ts\":1767225600000,\"slug\":\"bob-limits\",\"title\":\"tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\",\"read\":\"public\",\"post\":\"owner\",\"join\":\"open\",\"mods\":[\"k_iexiatt7ltiya2ksjda2sh4wxyc36tlqzwdqygcxviocjmh3tbvq\",\"k_qdchphr2tr3irvf3irjuuixf4u6jxrqp67pnw74ubfjx6fs24unq\",\"k_gt6adzf7obwp2v2mr5t6vqt63roe3ai2m6qwhcgbt4sb4h4zwgmq\",\"k_px3uff2ktk4qwf7u3ickpl6m6scsvyjrhgcofoqfgjaziutupybq\",\"k_ozilkrnhcveipgbdjkwlkssdk6p7kavzpo5vibjwnamsztldnlca\",\"k_4tushfuud6z7kv4rpk7cb3urmqkea44o52rzajvyvj2bavtzyxgq\",\"k_gnpgdeaxu6k4q7ul2kzoj2cjrbgi37offdfhnqlo4pdqipwiptta\",\"k_pezu24gjmysqeufkztjd2timex4o4ha4vpw5ll3udxupo2txljiq\",\"k_7d332ficatl43wj7agbnu7z6gasdsyk2anep24zkv6ozkmnr7wza\",\"k_zytkaupjjwfw4dir2zubf7eeczxsvn6m5fhtfjbnfqbs3uorkila\",\"k_b7gfckl6wgkukmef2hr7y5f35p5hbiamhgkntjjsdu3nipfmoqmq\",\"k_iz2dit3meesxhyiuwq74k67ps64sjmuxgyd4ci7n26el7jwo4eka\",\"k_ucjgguw6sr5qgapabelumwgcnt6q6uqbi4xrsqzfwbnq57q4fqiq\",\"k_3itu7rargx7hi23duct6wuhnipejl7evg5ra4zbfshyceyvr4gfa\",\"k_ubuc2b65j6hg3qtyujtoy5mhu7jnjxt6lry3zh6s25mabxxcpihq\",\"k_smddya35bj7urlxk4twkkoc4gwgul2235ablc3c2zz7otothgrkq\"]}",
@@ -666,6 +676,12 @@
       "error": "E_SCHEMA"
     },
     {
+      "name": "schema-auth-nonce-empty",
+      "why": "nonce of 0 bytes",
+      "token": "v1.rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq.eyJ2IjoxLCJ0IjoiYXV0aCIsImZyb20iOiJrX3JhaGZpNmZraXdsbXVqbTdja2ludnVmbXc1c255bWx6b3RzeGFuN2Y0ejd6dGRteG1hY3EiLCJ0cyI6MTc2NzIyNTYwMDAwMCwiaHViIjoiaHViLmV4YW1wbGUiLCJtZXRob2QiOiJHRVQiLCJwYXRoIjoiLyIsImJvZHkiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibiI6IiJ9.COHP7RZdUpjiVA0CdI_pHdz4K5lwLnxNsWLvQxaB-FgZj4LZ8kLGUMa3OYXQ3RkpUijHzaqRmUmcRrJINFIWAA",
+      "error": "E_SCHEMA"
+    },
+    {
       "name": "schema-auth-nonce-over",
       "why": "nonce of 65 bytes",
       "token": "v1.rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq.eyJ2IjoxLCJ0IjoiYXV0aCIsImZyb20iOiJrX3JhaGZpNmZraXdsbXVqbTdja2ludnVmbXc1c255bWx6b3RzeGFuN2Y0ejd6dGRteG1hY3EiLCJ0cyI6MTc2NzIyNTYwMDAwMCwiaHViIjoiaHViLmV4YW1wbGUiLCJtZXRob2QiOiJHRVQiLCJwYXRoIjoiLyIsImJvZHkiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibiI6Im5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5uIn0.RofPnvpkF4PE3cb81dTKubh9pwJ9lsNfPuBw3oVZp6YKCjwyNR2_GsChPw3aecUGbuW8SHYiKu3DSRQnql7vDw",
@@ -699,6 +715,18 @@
       "name": "key-order-8",
       "why": "signer has order 8",
       "token": "v1.e3ujld6cwit3arod6se7f34y6dk57laf2pddgonrhabiq3kt7qcq.eyJ2IjoxLCJ0IjoiaGFuZGxlIiwiZnJvbSI6ImtfZTN1amxkNmN3aXQzYXJvZDZzZTdmMzR5NmRrNTdsYWYycGRkZ29ucmhhYmlxM2t0N3FjcSIsInRzIjoxNzY3MjI1NjAwMDAwLCJuYW1lIjoid2VhazE2IiwiaHViIjoiaHViLmV4YW1wbGUifQ.AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "error": "E_ENCODING"
+    },
+    {
+      "name": "key-order-8b",
+      "why": "signer has order 8 (the other y value)",
+      "token": "v1.y4lwu4b5jxme7or4bn3a2edhb4vcau72fq44zrsoy76xpevman5a.eyJ2IjoxLCJ0IjoiaGFuZGxlIiwiZnJvbSI6ImtfeTRsd3U0YjVqeG1lN29yNGJuM2EyZWRoYjR2Y2F1NzJmcTQ0enJzb3k3NnhwZXZtYW41YSIsInRzIjoxNzY3MjI1NjAwMDAwLCJuYW1lIjoid2VhazE3IiwiaHViIjoiaHViLmV4YW1wbGUifQ.AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "error": "E_ENCODING"
+    },
+    {
+      "name": "key-order-8-negated",
+      "why": "signer has order 8, x sign bit set",
+      "token": "v1.e3ujld6cwit3arod6se7f34y6dk57laf2pddgonrhabiq3kt7scq.eyJ2IjoxLCJ0IjoiaGFuZGxlIiwiZnJvbSI6ImtfZTN1amxkNmN3aXQzYXJvZDZzZTdmMzR5NmRrNTdsYWYycGRkZ29ucmhhYmlxM2t0N3NjcSIsInRzIjoxNzY3MjI1NjAwMDAwLCJuYW1lIjoid2VhazAiLCJodWIiOiJodWIuZXhhbXBsZSJ9.AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "error": "E_ENCODING"
     },
     {

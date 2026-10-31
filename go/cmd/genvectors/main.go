@@ -220,6 +220,8 @@ func main() {
 	s("schema-hub-over", "hub name of 254 bytes", hdr("handle", bob)+`,"name":"bob","hub":"`+hubName(62)+`"}`)
 	s("schema-auth-path-over", "path of 2049 bytes", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"/%s","body":%q}`, strings.Repeat("p", 2048), emptySHA))
 	s("schema-auth-method-lowercase", "method must be uppercase", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"get","path":"/v1/inbox","body":%q}`, emptySHA))
+	s("schema-auth-nonce-empty", "nonce of 0 bytes", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"/","body":%q,"n":""}`, emptySHA))
+	addValid("auth-nonce-at-limit", bob, hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"/","body":%q,"n":"%s"}`, emptySHA, strings.Repeat("n", 64)))
 	s("schema-auth-nonce-over", "nonce of 65 bytes", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"/","body":%q,"n":"%s"}`, emptySHA, strings.Repeat("n", 65)))
 	addValid("channel-at-limits", bob, hdr("channel", bob)+`,"slug":"bob-limits","title":"`+strings.Repeat("t", 80)+`","read":"public","post":"owner","join":"open","mods":[`+modList(16)+`]}`)
 	addValid("handle-hub-at-limit", bob, hdr("handle", bob)+`,"name":"bob","hub":"`+hubName(61)+`"}`)
@@ -233,6 +235,9 @@ func main() {
 	order2 := leInt(new(big.Int).Sub(fieldP(), big.NewInt(1)))
 	order4 := make([]byte, 32)
 	order8, _ := hex.DecodeString("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05")
+	order8b, _ := hex.DecodeString("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a")
+	order8Neg := append([]byte{}, order8...)
+	order8Neg[31] |= 0x80
 	for _, w := range []struct {
 		name, why string
 		pub       []byte
@@ -243,6 +248,8 @@ func main() {
 		{"key-order-2", "signer has order 2 (y = p-1)", order2, 2},
 		{"key-order-4", "signer has order 4 (y = 0)", order4, 4},
 		{"key-order-8", "signer has order 8", order8, 8},
+		{"key-order-8b", "signer has order 8 (the other y value)", order8b, 8},
+		{"key-order-8-negated", "signer has order 8, x sign bit set", order8Neg, 8},
 	} {
 		addInvalid(w.name, w.why, forgeSmallOrder(w.pub, w.order), am.EEncoding)
 	}
