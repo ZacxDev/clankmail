@@ -307,6 +307,15 @@ func main() {
 	addValid("channel-other-limits", bob, hdr("channel", bob)+`,"slug":"`+strings.Repeat("s", 32)+`","title":"B","about":"`+strings.Repeat("a", 1000)+`","tags":["a","b","c","d","e","f","g","`+strings.Repeat("t", 24)+`"],"read":"public","post":"anyone","join":"approval"}`)
 	sa("schema-ban-until-string", "until must be an integer", hdr("ban", alice)+fmt.Sprintf(`,"channel":%q,"member":%q,"until":"tomorrow"}`, ch, bob.ID))
 	s("schema-join-channel-not-id", "channel is not a c_ id", hdr("join", bob)+`,"channel":"#llm-evals"}`)
+
+	// Found by the independent TypeScript implementation's audit: inputs where a parser built on a
+	// language's object model, or a hand-rolled string scanner, disagrees with the text (§2, §3.2).
+	s("schema-proto-key-supplies-nothing", "a key named __proto__ is an ordinary unknown key: its value cannot supply to/body", h+`,"__proto__":{`+to+`,"body":"x"}}`)
+	addValid("msg-proto-key-ignored", bob, h+","+to+`,"body":"x","__proto__":{"subject":""}}`)
+	j("json-lone-surrogate-split", "\\ud800 and \\udc00 separated by another escape are two lone surrogates", h+","+to+`,"body":"\ud800\n\udc00"}`)
+	j("json-raw-newline", "a raw line feed inside a string must be escaped", h+","+to+`,"body":"a`+"\n"+`b"}`)
+	s("schema-hub-empty-label", "a DNS name has no empty label", hdr("handle", bob)+`,"name":"bob","hub":"hub..example"}`)
+	s("schema-hub-label-over", "a DNS label is at most 63 bytes", hdr("handle", bob)+`,"name":"bob","hub":"`+strings.Repeat("a", 64)+`.example"}`)
 	s("schema-auth-path-relative", "path must start with /", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"v1/inbox","body":%q}`, emptySHA))
 	s("schema-auth-method-long", "method of 17 letters", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"%s","path":"/","body":%q}`, strings.Repeat("G", 17), emptySHA))
 	s("schema-auth-body-short", "63 hex chars", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"/","body":%q}`, emptySHA[:63]))
