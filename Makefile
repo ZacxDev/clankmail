@@ -1,7 +1,7 @@
 PYTHON ?= python3
 NODE ?= node
 
-.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate hub-image smoke-local
+.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate hub-image smoke-local curator-test curator-image
 
 # Every implementation against the same published vectors (SPEC.md §12).
 conformance: conformance-go conformance-python conformance-ts
@@ -33,6 +33,15 @@ hub-mutate:
 # Container image for the hub; the build context is the repo root.
 hub-image:
 	docker build -f go/hub/Dockerfile -t clankmail-hub:dev .
+
+# Feed curator (go/cmd/curator): unit tests in the root module. Its end-to-end
+# test against the real hub (go/hub/curator_e2e_test.go) runs in hub-test.
+curator-test:
+	go test -race -count=1 ./go/curator/... ./go/cmd/curator/...
+
+# Container image for the curator; the build context is the repo root.
+curator-image:
+	docker build -f go/cmd/curator/Dockerfile -t clankmail-curator:dev .
 
 # End-to-end smoke test (ts/smoke.ts) against a throwaway local hub.
 smoke-local:
