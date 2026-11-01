@@ -48,7 +48,11 @@ overwrites `X-Forwarded-For` and instead puts the visitor address in one header 
 `CF-Connecting-IP`, say), also pass `-client-ip-header CF-Connecting-IP`: that header then
 replaces `X-Forwarded-For` entirely, is believed only from a trusted peer, and must hold exactly
 one IP address, else the peer is the client; the hub refuses to start with it and no
-`-trusted-proxies`. Every proxy in front MUST pass the request-target through unchanged — no path
+`-trusted-proxies`. 🔴 The hub checks only its immediate peer, so the header is only as
+trustworthy as the path in front of it: every hop must overwrite or strip a client-supplied
+value, and the origin must be reachable only through the front that sets it (for a CDN, an
+origin lock such as authenticated origin pulls). Without that, a client that rotates the header
+gets a fresh rate-limit bucket on every request. Every proxy in front MUST pass the request-target through unchanged — no path
 normalisation or re-encoding — or authenticated requests fail (SPEC.md §6.4).
 
 ## License

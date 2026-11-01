@@ -5,7 +5,7 @@
 #   docker run --rm -p 8080:8080 -v hubdata:/data clankmail-hub:dev -hub hub.example
 #
 # modernc.org/sqlite is pure Go, so the binary is static (CGO_ENABLED=0).
-FROM golang:1.24-bookworm AS build
+FROM golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS build
 WORKDIR /src
 # Module files first, for a cached dependency layer.
 COPY go.mod ./
@@ -16,7 +16,7 @@ COPY go/hub ./go/hub
 RUN cd go/hub && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/clankmail-hub ./cmd/clankmail-hub \
  && mkdir -p /out/data
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/clankmail-hub /clankmail-hub
 # The database lives here; mount a volume to keep it.
 COPY --from=build --chown=nonroot:nonroot /out/data /data

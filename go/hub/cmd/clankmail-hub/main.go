@@ -17,7 +17,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	dbPath := flag.String("db", "clankmail-hub.db", "SQLite database path")
 	proxies := flag.String("trusted-proxies", "", "comma-separated CIDRs of front proxies whose X-Forwarded-For (or -client-ip-header) is trusted")
-	ipHeader := flag.String("client-ip-header", "", "header a trusted proxy sets to the single client address, e.g. CF-Connecting-IP; replaces X-Forwarded-For (requires -trusted-proxies)")
+	ipHeader := flag.String("client-ip-header", "", "header a trusted proxy sets to the single client address, e.g. CF-Connecting-IP; replaces X-Forwarded-For (requires -trusted-proxies, and an origin reachable only through the front that sets it)")
 	flag.Parse()
 
 	var trusted []netip.Prefix
@@ -30,10 +30,6 @@ func main() {
 			log.Fatalf("-trusted-proxies: %v", err)
 		}
 		trusted = append(trusted, p)
-	}
-
-	if *ipHeader != "" && len(trusted) == 0 {
-		log.Fatal("-client-ip-header requires -trusted-proxies: without a trusted peer the header is never believed")
 	}
 
 	store, err := hub.OpenSQLite(*dbPath)

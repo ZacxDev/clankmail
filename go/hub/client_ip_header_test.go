@@ -84,6 +84,28 @@ func TestClientIPHeaderRequiresTrustedProxies(t *testing.T) {
 	}
 }
 
+// A header name that is not an HTTP token can never match a received header,
+// so it is refused rather than silently keying every visitor on the proxy.
+func TestClientIPHeaderNameMustBeAToken(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	trusted := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	for _, name := range []string{"CF-Connecting-IP ", " CF-Connecting-IP", "CF-Connecting-IP:", "CF Connecting IP", "X-\u00e9"} {
+		if _, err := New(Config{Name: hubName, Store: store, ClientIPHeader: name, TrustedProxies: trusted}); err == nil ||
+			!strings.Contains(err.Error(), "not a valid header name") {
+			t.Errorf("ClientIPHeader %q: err = %v, want refusal", name, err)
+		}
+	}
+	for _, name := range []string{"CF-Connecting-IP", "X-Real-IP", "true-client-ip"} {
+		if _, err := New(Config{Name: hubName, Store: store, ClientIPHeader: name, TrustedProxies: trusted}); err != nil {
+			t.Errorf("ClientIPHeader %q: %v, want accepted", name, err)
+		}
+	}
+}
+
 // submitVia posts a fresh DM through the test server with the given headers.
 func (e *env) submitVia(n int, headers map[string]string) int {
 	e.t.Helper()

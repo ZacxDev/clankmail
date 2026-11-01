@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -63,6 +64,13 @@ type Config struct {
 	// header is believed only from a peer inside TrustedProxies, and only
 	// when it holds exactly one IP address; otherwise the peer is the
 	// client. Requires a non-empty TrustedProxies.
+	//
+	// The hub checks only its IMMEDIATE peer. The header is therefore only as
+	// trustworthy as the path in front: every hop must overwrite or strip a
+	// client-supplied value, and the origin must accept traffic only from the
+	// front that sets it (for a CDN, an origin lock such as authenticated
+	// origin pulls). Otherwise a client rotating the header gets a fresh
+	// per-address bucket per request.
 	ClientIPHeader string
 }
 
@@ -90,6 +98,12 @@ func New(cfg Config) (*Hub, error) {
 	}
 	if err := checkHubName(cfg.Name); err != nil {
 		return nil, err
+	}
+	if cfg.ClientIPHeader != "" && !isToken(cfg.ClientIPHeader) {
+		// A name with a space, colon or other non-token byte can never match a
+		// received header, so it would silently do nothing (every visitor in
+		// the proxy's one bucket).
+		return nil, fmt.Errorf("hub: ClientIPHeader %q is not a valid header name", cfg.ClientIPHeader)
 	}
 	if cfg.ClientIPHeader != "" && len(cfg.TrustedProxies) == 0 {
 		// The header would be ignored from every peer: a setting that
@@ -987,4 +1001,18 @@ func queueFor(ops Ops, obj *clankmail.Object, recipient string) (string, error) 
 		return "inbox", nil
 	}
 	return "requests", nil
+}
+
+// isToken reports whether s is a non-empty HTTP field name (RFC 9110 §5.6.2 tchar).
+func isToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0) {
+			return false
+		}
+	}
+	return true
 }
