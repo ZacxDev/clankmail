@@ -129,6 +129,8 @@ func New(cfg Config) (*Hub, error) {
 	h.mux.HandleFunc("GET /v1/channels", h.handleDiscovery)
 	h.mux.HandleFunc("GET /v1/channels/{ref}", h.handleChannel)
 	h.mux.HandleFunc("GET /v1/channels/{id}/log", h.handleLog)
+	h.mux.HandleFunc("GET /v1/subs", h.handleSubs)
+	h.mux.HandleFunc("GET /v1/digest", h.handleDigest)
 	h.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, &hubErr{http.StatusNotFound, ENotFound, "no such endpoint"})
 	})
@@ -433,12 +435,15 @@ func (h *Hub) authorize(ops Ops, obj *clankmail.Object, stored *Obj, now int64) 
 		if err != nil {
 			return nil, err
 		}
-		revocable := target != nil && (target.Type == "grant" || target.Type == "handle" || target.Type == "enroll")
+		revocable := target != nil && (target.Type == "grant" || target.Type == "handle" || target.Type == "enroll" || target.Type == "sub")
 		if !revocable || target.From != obj.From {
-			return nil, forbidden("target must be a grant, handle or enroll signed by the same key")
+			return nil, forbidden("target must be a grant, handle, enroll or sub signed by the same key")
 		}
 		return func() error {
 			switch target.Type {
+			case "sub":
+				// §7.4: ends that subscription and nothing else.
+				return ops.RevokeSub(target.ID)
 			case "handle":
 				cur, err := ops.HandleByKey(obj.From)
 				if err != nil || cur == nil || cur.ObjID != target.ID {
@@ -505,6 +510,9 @@ func (h *Hub) authorize(ops Ops, obj *clankmail.Object, stored *Obj, now int64) 
 
 	case "msg":
 		return h.authorizeMsg(ops, obj, stored, now)
+
+	case "sub":
+		return h.authorizeSub(ops, obj, now)
 	}
 	return nil, forbidden("type " + obj.Type + " is not accepted by this hub")
 }
@@ -728,7 +736,20 @@ func banned(ops Ops, ch *Channel, key string, now int64) (bool, error) {
 	if err != nil || !ok {
 		return false, err
 	}
-	return until == 0 || until > now, nil
+	return banLive(until, now), nil
+}
+
+// banLive is the single definition of a live ban (§7.3): until 0 = forever.
+func banLive(until, now int64) bool { return until == 0 || until > now }
+
+// mayRead reports whether key may read ch's log (§8): anyone for read=public,
+// an unbanned member for read=members. Subscriptions and the digest use it.
+func mayRead(ops Ops, ch *Channel, key string, now int64) (bool, error) {
+	if ch.Read == "public" {
+		return true, nil
+	}
+	s, err := standingOf(ops, ch, key, now)
+	return s.member, err
 }
 
 func (h *Hub) authorizeMembership(ops Ops, obj *clankmail.Object, stored *Obj, now int64) (func() error, error) {
@@ -858,7 +879,8 @@ func (h *Hub) authorizeMsg(ops Ops, obj *clankmail.Object, stored *Obj, now int6
 		if err := canPost(ops, ch, obj.From, now); err != nil {
 			return nil, err
 		}
-		return func() error { return ops.AppendLog(ch.ID, obj.ID, now) }, nil
+		re, _ := obj.Fields["re"].(string)
+		return func() error { return ops.AppendLog(ch.ID, obj.ID, re, now) }, nil
 	}
 
 	// Direct delivery (§7.2): one stored token, one inbox entry per recipient.

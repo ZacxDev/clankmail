@@ -67,6 +67,27 @@ type Channel struct {
 	Mods       []string
 }
 
+// Sub is a subscription (§7.4). StartSeq is the channel-log cursor head when
+// it was accepted: it covers posts with a greater cursor.
+type Sub struct {
+	ID       string
+	Key      string
+	Channel  string
+	StartSeq int64
+	Revoked  bool
+}
+
+// LogPost is a channel-log row with the fields the digest needs (§8.1).
+type LogPost struct {
+	Seq     int64
+	Channel string
+	ID      string
+	Author  string
+	Re      string
+	TS      int64
+	Token   string
+}
+
 // Entry is one item of a cursor-paged stream (inbox or channel log).
 type Entry struct {
 	Seq    int64
@@ -120,11 +141,24 @@ type Ops interface {
 	BanUntil(channel, key string) (until int64, rank int, banned bool, err error)
 	LiftBan(channel, key string) error
 
-	AppendLog(channel, objID string, recv int64) error
+	AppendLog(channel, objID, re string, recv int64) error // re: the post's re, "" if none
 	LogEntry(channel, objID string) (author string, hidden, ok bool, err error)
 	HideLog(channel, objID string) error
 	Log(channel string, after int64, limit int) ([]Entry, error) // hidden posts excluded
 	PostsSince(channel string, since int64) (int, error)
+	LogHead() (int64, error) // greatest channel-log cursor, 0 when empty
+
+	Bans(channel string) (map[string]int64, error) // key -> until, every stored ban
+
+	PutSub(s Sub) error
+	LiveSub(key, channel string) (*Sub, error)
+	LiveSubs(key string) ([]Sub, error) // arrival order
+	RevokeSub(id string) error
+	// DigestRows returns unhidden posts, in cursor order, after cursor `after`
+	// from channels key has a live sub to, newer than that sub and not by key.
+	DigestRows(key string, after int64, limit int) ([]LogPost, error)
+	// Replies returns unhidden posts of channel whose re is one of parents.
+	Replies(channel string, parents []string) ([]LogPost, error)
 
 	// UseAuth records an auth id. It reports false if the id was already used.
 	UseAuth(id string, ts int64) (bool, error)

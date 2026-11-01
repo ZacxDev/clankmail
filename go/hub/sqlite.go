@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no cgo
 )
@@ -39,8 +40,12 @@ CREATE TABLE IF NOT EXISTS bans (
   PRIMARY KEY(channel, key));
 CREATE TABLE IF NOT EXISTS chan_log (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, obj_id TEXT NOT NULL,
-  author TEXT NOT NULL, recv INTEGER NOT NULL, hidden INTEGER NOT NULL DEFAULT 0);
+  author TEXT NOT NULL, recv INTEGER NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, re TEXT);
 CREATE INDEX IF NOT EXISTS chan_log_channel ON chan_log(channel, seq);
+CREATE TABLE IF NOT EXISTS subs (
+  id TEXT PRIMARY KEY, key TEXT NOT NULL, channel TEXT NOT NULL, start_seq INTEGER NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0);
+CREATE UNIQUE INDEX IF NOT EXISTS subs_live ON subs(key, channel) WHERE revoked=0;
 CREATE TABLE IF NOT EXISTS auth_seen (id TEXT PRIMARY KEY, ts INTEGER NOT NULL);
 `
 
@@ -67,7 +72,50 @@ func OpenSQLite(path string) (*SQLite, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateLogRe(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &SQLite{db: db}, nil
+}
+
+// migrateLogRe adds chan_log.re to a database created before the digest
+// (§8.1) and fills it from the stored tokens. Idempotent: a NULL re means
+// "not yet read"; a post with no re gets "".
+func migrateLogRe(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('chan_log') WHERE name='re'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE chan_log ADD COLUMN re TEXT`); err != nil {
+			return err
+		}
+	}
+	rows, err := db.Query(`SELECT l.seq, ob.token FROM chan_log l JOIN objects ob ON ob.id=l.obj_id WHERE l.re IS NULL`)
+	if err != nil {
+		return err
+	}
+	fill := map[int64]string{}
+	for rows.Next() {
+		var seq int64
+		var tok string
+		if err := rows.Scan(&seq, &tok); err != nil {
+			rows.Close()
+			return err
+		}
+		fill[seq] = storedFields(tok).Re
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for seq, re := range fill {
+		if _, err := db.Exec(`UPDATE chan_log SET re=? WHERE seq=?`, re, seq); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }
@@ -365,9 +413,9 @@ func (o sqlOps) BanUntil(channel, key string) (int64, int, bool, error) {
 	return until, rank, ok, err
 }
 
-func (o sqlOps) AppendLog(channel, objID string, recv int64) error {
-	return o.exec(`INSERT INTO chan_log(channel,obj_id,author,recv)
-		SELECT ?, id, from_key, ? FROM objects WHERE id=?`, channel, recv, objID)
+func (o sqlOps) AppendLog(channel, objID, re string, recv int64) error {
+	return o.exec(`INSERT INTO chan_log(channel,obj_id,author,recv,re)
+		SELECT ?, id, from_key, ?, ? FROM objects WHERE id=?`, channel, recv, re, objID)
 }
 
 func (o sqlOps) LogEntry(channel, objID string) (string, bool, bool, error) {
@@ -392,6 +440,105 @@ func (o sqlOps) PostsSince(channel string, since int64) (int, error) {
 	_, err := one(o.tx.QueryRow(`SELECT COUNT(*) FROM chan_log WHERE channel=? AND hidden=0 AND recv>=?`,
 		channel, since), &n)
 	return n, err
+}
+
+func (o sqlOps) LogHead() (int64, error) {
+	var n int64
+	_, err := one(o.tx.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM chan_log`), &n)
+	return n, err
+}
+
+func (o sqlOps) Bans(channel string) (map[string]int64, error) {
+	rows, err := o.tx.Query(`SELECT key, until FROM bans WHERE channel=?`, channel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var k string
+		var until int64
+		if err := rows.Scan(&k, &until); err != nil {
+			return nil, err
+		}
+		out[k] = until
+	}
+	return out, rows.Err()
+}
+
+func (o sqlOps) PutSub(s Sub) error {
+	return o.exec(`INSERT INTO subs(id,key,channel,start_seq,revoked) VALUES(?,?,?,?,?)`,
+		s.ID, s.Key, s.Channel, s.StartSeq, s.Revoked)
+}
+
+func (o sqlOps) subs(q string, args ...any) ([]Sub, error) {
+	rows, err := o.tx.Query(`SELECT id,key,channel,start_seq,revoked FROM subs WHERE `+q+` ORDER BY rowid`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Sub
+	for rows.Next() {
+		var s Sub
+		if err := rows.Scan(&s.ID, &s.Key, &s.Channel, &s.StartSeq, &s.Revoked); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (o sqlOps) LiveSub(key, channel string) (*Sub, error) {
+	s, err := o.subs(`key=? AND channel=? AND revoked=0`, key, channel)
+	if err != nil || len(s) == 0 {
+		return nil, err
+	}
+	return &s[0], nil
+}
+
+func (o sqlOps) LiveSubs(key string) ([]Sub, error) { return o.subs(`key=? AND revoked=0`, key) }
+
+func (o sqlOps) RevokeSub(id string) error {
+	return o.exec(`UPDATE subs SET revoked=1 WHERE id=?`, id)
+}
+
+func (o sqlOps) logPosts(q string, args ...any) ([]LogPost, error) {
+	rows, err := o.tx.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LogPost
+	for rows.Next() {
+		var p LogPost
+		if err := rows.Scan(&p.Seq, &p.Channel, &p.ID, &p.Author, &p.Re, &p.TS, &p.Token); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (o sqlOps) DigestRows(key string, after int64, limit int) ([]LogPost, error) {
+	return o.logPosts(`SELECT l.seq, l.channel, l.obj_id, l.author, COALESCE(l.re,''), ob.ts, ob.token
+		FROM chan_log l
+		JOIN subs s ON s.channel=l.channel AND s.key=? AND s.revoked=0
+		JOIN objects ob ON ob.id=l.obj_id
+		WHERE l.hidden=0 AND l.author!=? AND l.seq>? AND l.seq>s.start_seq
+		ORDER BY l.seq LIMIT ?`, key, key, after, limit)
+}
+
+func (o sqlOps) Replies(channel string, parents []string) ([]LogPost, error) {
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	args := []any{channel}
+	for _, p := range parents {
+		args = append(args, p)
+	}
+	return o.logPosts(`SELECT l.seq, l.channel, l.obj_id, l.author, l.re, ob.ts, ob.token
+		FROM chan_log l JOIN objects ob ON ob.id=l.obj_id
+		WHERE l.channel=? AND l.hidden=0 AND l.re IN (?`+strings.Repeat(",?", len(parents)-1)+`)`, args...)
 }
 
 func (o sqlOps) UseAuth(id string, ts int64) (bool, error) {

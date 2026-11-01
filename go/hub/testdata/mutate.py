@@ -18,7 +18,7 @@ import hashlib, os, shutil, subprocess, sys, tempfile
 SRC = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 WORK = tempfile.mkdtemp(prefix="hub-mutate-")
 
-H, A, S = "go/hub/hub.go", "go/hub/api.go", "go/hub/sqlite.go"
+H, A, S, D = "go/hub/hub.go", "go/hub/api.go", "go/hub/sqlite.go", "go/hub/digest.go"
 # (guard, file, old, new, test, expected substring in failing output)
 M = [
  # (guard, file, old, new, test, expected substring). Mutants keep every
@@ -55,7 +55,7 @@ M = [
  ("grant revoke does not revoke enrolled key", H, "\t\t\tif err := ops.RevokeKey(en.Agent); err != nil {", "\t\t\tif err := ops.RevokeKey(en.Agent + \"x\"); err != nil {", "TestRevokedAgentRejected", "want 403 E_REVOKED, got 200"),
  ("grant revoke silences un-enrolled key (old rule)", H, "\tenrolls, err := ops.EnrollsForGrant(gid)\n", "\tif g, _ := ops.Grant(gid); g != nil {\n\t\tops.RevokeKey(g.Agent)\n\t}\n\tenrolls, err := ops.EnrollsForGrant(gid)\n", "TestRevokeCannotSilenceUnenrolledKey", "submit rejected: 403"),
  ("revoke: same-signer check", H, "if !revocable || target.From != obj.From {", "if !revocable {", "TestRevokedAgentRejected", "want 403 E_FORBIDDEN, got 200"),
- ("revoke: target type check", H, 'revocable := target != nil && (target.Type == "grant" || target.Type == "handle" || target.Type == "enroll")', 'revocable := target != nil', "TestRevokeTargetType", "want 403 E_FORBIDDEN, got 200"),
+ ("revoke: target type check", H, 'revocable := target != nil && (target.Type == "grant" || target.Type == "handle" || target.Type == "enroll" || target.Type == "sub")', 'revocable := target != nil', "TestRevokeTargetType", "want 403 E_FORBIDDEN, got 200"),
  ("enroll withdrawal revokes key", H, "\t\t\t\treturn ops.RevokeEnroll(target.ID)\n", "\t\t\t\tops.RevokeKey(target.From)\n\t\t\t\treturn ops.RevokeEnroll(target.ID)\n", "TestRevokeOwnEnroll", "submit rejected: 403"),
  ("enroll withdrawal ignored", H, "\t\t\t\treturn ops.RevokeEnroll(target.ID)\n", "\t\t\t\treturn nil\n", "TestRevokeOwnEnroll", "withdrawn binding still listed"),
  ("enroll: agent must match grant", H, "if g == nil || g.Agent != obj.From {", "if g == nil {", "TestEnrollRules", "want 403 E_FORBIDDEN, got 200"),
@@ -164,6 +164,39 @@ M = [
  ("R3: refused token ids forgotten (each replay charges again)", H, "\t\tif charged && errors.As(err, &he) && he.status < 500 {", "\t\tif charged && errors.As(err, &he) && he.status < 500 && false {", "TestRejectedReplayCannotDrainVictimKeyLimit", "want 403 E_FORBIDDEN, got 429"),
  ("R3: remembered refusal not consulted", H, "\t\tif rj, ok := h.rejected[obj.ID]; ok {", "\t\tif rj, ok := h.rejected[obj.ID]; ok && false {", "TestRejectedReplayCannotDrainVictimKeyLimit", "want 403 E_FORBIDDEN, got 429"),
  ("R3: auth refusal after the key charge", H, 'if obj.Type == "auth" {', 'if obj.Type == "auth" && false {', "TestRejectedReplayCannotDrainVictimKeyLimit", "want 403 E_FORBIDDEN, got 429"),
+ # --- subscriptions (§7.4) ---
+ ("sub: unknown channel not 404", D, '\t\treturn nil, notFound("unknown channel")\n\t}\n\tif ok, err := mayRead(', '\t\treturn nil, forbidden("unknown channel")\n\t}\n\tif ok, err := mayRead(', "TestSubAcceptance", "want 404 E_NOT_FOUND, got 403"),
+ ("sub: members channel without membership", D, '\t} else if !ok {\n\t\treturn nil, forbidden("a read=members', '\t} else if !ok && false {\n\t\treturn nil, forbidden("a read=members', "TestDigestMembersOnlyChannel", "want 403 E_FORBIDDEN, got 200"),
+ ("sub: mayRead treats members as public", H, '\tif ch.Read == "public" {\n\t\treturn true, nil', '\tif ch.Read == "public" || true {\n\t\treturn true, nil', "TestDigestMembersOnlyChannel", "want 403 E_FORBIDDEN, got 200"),
+ ("sub: duplicate live sub accepted", D, "\t} else if cur != nil {", "\t} else if cur != nil && false {", "TestSubAcceptance", "want 403 E_FORBIDDEN, got"),
+ ("sub: live cap off", D, "\tif len(live) >= maxLiveSubs {", "\tif len(live) >= maxLiveSubs && false {", "TestSubAcceptance", "want 429 E_RATE, got 200"),
+ ("sub: live cap off by one (101)", D, "\tif len(live) >= maxLiveSubs {", "\tif len(live) > maxLiveSubs {", "TestSubAcceptance", "want 429 E_RATE, got 200"),
+ ("sub: replays history (start 0)", D, "StartSeq: head})", "StartSeq: 0 * head})", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("sub: public by id", A, '\tif ob.Type == "sub" {\n\t\tpublic = false', '\tif ob.Type == "sub" && false {\n\t\tpublic = false', "TestSubAcceptance", "want 404 E_NOT_FOUND, got 200"),
+ ("sub: revoke not applied", H, "\t\t\t\treturn ops.RevokeSub(target.ID)\n", "\t\t\t\treturn nil\n", "TestRevokedSubStopsDelivery", "after revoke: got"),
+ ("sub: not revocable", H, ' || target.Type == "sub")', ')', "TestRevokedSubStopsDelivery", "submit rejected: 403"),
+ ("subs: auth not required", D, "func (h *Hub) handleSubs(w http.ResponseWriter, r *http.Request) {\n\tkey, err := h.requireAuth(r, nil)\n\tif err != nil {", "func (h *Hub) handleSubs(w http.ResponseWriter, r *http.Request) {\n\tkey, err := h.requireAuth(r, nil)\n\tif err != nil && false {", "TestSubAcceptance", "want 401 E_AUTH, got 200"),
+ # --- digest (§8.1) ---
+ ("digest: auth not required", D, "func (h *Hub) handleDigest(w http.ResponseWriter, r *http.Request) {\n\tkey, err := h.requireAuth(r, nil)\n\tif err != nil {", "func (h *Hub) handleDigest(w http.ResponseWriter, r *http.Request) {\n\tkey, err := h.requireAuth(r, nil)\n\tif err != nil && false {", "TestSubAcceptance", "want 401 E_AUTH, got 200"),
+ ("digest r1: hidden posts served", S, "WHERE l.hidden=0 AND l.author!=? AND", "WHERE 1=1 AND l.author!=? AND", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest r2: revoked sub still delivers", S, "s.key=? AND s.revoked=0", "s.key=? AND 1=1", "TestRevokedSubStopsDelivery", "resubscribed: got"),  # the revoked row then joins again beside the new sub; "after revoke" stays empty because digest() reads only live subs
+ ("digest r2: posts before the sub served", S, " AND l.seq>s.start_seq", "", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest r3: unreadable channel served", D, "\t\t\tif !readable[p.Channel] || isBanned(p.Channel, p.Author) {", "\t\t\tif isBanned(p.Channel, p.Author) {", "TestDigestMembersOnlyChannel", "after leave: got"),
+ ("digest r4: own posts served", S, "l.author!=? AND l.seq>?", "(l.author!=? OR 1) AND l.seq>?", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest r5: banned author served", D, "\t\t\tif !readable[p.Channel] || isBanned(p.Channel, p.Author) {", "\t\t\tif !readable[p.Channel] {", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest counts: banned replier counted", D, "inWin || isBanned(p.Channel, p.Author) {", "inWin {", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest counts: hidden reply counted", S, "WHERE l.channel=? AND l.hidden=0 AND l.re IN", "WHERE l.channel=? AND l.re IN", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest counts: re not stored on append", H, "ops.AppendLog(ch.ID, obj.ID, re, now)", "ops.AppendLog(ch.ID, obj.ID, re[:0], now)", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest cursor: next = first window post", D, "\t\tnext = win[len(win)-1].Seq", "\t\tnext = win[0].Seq", "TestDigestCursor", "after next: got"),
+ ("digest cursor: never advances", D, "\t\tnext = win[len(win)-1].Seq", "\t\tnext = after + 0*win[0].Seq", "TestDigestCursor", "after next: got"),
+ ("digest window: never cut", D, "\t\t\tif len(win) == digestWindow {", "\t\t\tif len(win) == digestWindow && false {", "TestDigestWindow", "first window"),
+ ("digest window: 999", D, "digestWindow       = 1000", "digestWindow       = 999 ", "TestDigestWindow", "first window"),
+ ("digest window: scan stops after one batch", D, "\t\tif len(rows) < digestScanBatch {", "\t\tif len(rows) <= digestScanBatch {", "TestDigestWindow", "first window"),
+ ("digest query: limit 51 accepted", D, "if perr != nil || n < 1 || n > digestMaxParam {", "if perr != nil || n < 1 {", "TestDigestCursor", "want 400 E_QUERY, got 200"),
+ ("digest query: default per_channel 5 -> 6", D, "digestDefaultPerCh = 5", "digestDefaultPerCh = 6", "TestDigestDefaultsAndCaps", "?: got"),
+ ("digest query: default limit 20 -> 21", D, "digestDefaultLimit = 20", "digestDefaultLimit = 21", "TestDigestDefaultsAndCaps", "?per_channel=50: got"),
+ ("migration: re not backfilled", S, "fill[seq] = storedFields(tok).Re", "fill[seq] = storedFields(tok).Re[:0]", "TestLogReMigration", "migrated digest"),
+ ("log: members check bypassed via mayRead", A, "\t\t\tok, err = mayRead(ops, ch, key, h.nowMS())\n", "\t\t\tok, err = key == key, nil\n", "TestMembersOnlyChannelLog", "want 403 E_FORBIDDEN, got 200"),
 ]
 
 GO = os.path.realpath(shutil.which("go"))  # resolved once: a profile switch mid-run must not lose it
