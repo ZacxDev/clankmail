@@ -206,7 +206,7 @@ const DOMAIN_PREFIX = Buffer.from("clankmail/v1\n", "utf8");
 
 const KNOWN_TYPES = new Set([
   "handle", "grant", "enroll", "revoke", "auth",
-  "channel", "msg", "join", "leave", "admit", "ban", "remove",
+  "channel", "msg", "join", "leave", "admit", "ban", "remove", "sub",
 ]);
 
 /**
@@ -654,6 +654,7 @@ function validateSchema(obj: Record<string, unknown>): SchemaResult {
     case "admit": return validateAdmit(obj);
     case "ban": return validateBan(obj);
     case "remove": return validateRemove(obj);
+    case "sub": return validateSub(obj);
     default: return { ok: true }; // Unknown type passes schema (but E_SCHEMA would catch unknown t above)
   }
 }
@@ -874,4 +875,125 @@ function validateRemove(obj: Record<string, unknown>): SchemaResult {
   if (typeof obj.channel !== "string" || !isChannelIdFormat(obj.channel)) return { ok: false };
   if (typeof obj.target !== "string" || !isObjectIdFormat(obj.target)) return { ok: false };
   return { ok: true };
+}
+
+function validateSub(obj: Record<string, unknown>): SchemaResult {
+  if (typeof obj.channel !== "string" || !isChannelIdFormat(obj.channel)) return { ok: false };
+  return { ok: true };
+}
+
+// ──────────────────────────────────────────────
+// §8.1 Digest — counting, ranking and caps
+// ──────────────────────────────────────────────
+
+/** A post as seen by the digest function. */
+export interface DigestPost {
+  id: string;
+  channel: string;
+  from: string;
+  ts: number;
+  re?: string;
+  /** Whether the post is in the window (and therefore may appear in items). */
+  window?: boolean;
+  /** Whether the post is hidden by remove (§7.3). Hidden replies do not count. */
+  hidden?: boolean;
+  /** Whether the post's author is under a live ban in its channel. Bans do not change counts. */
+  banned?: boolean;
+}
+
+/** A single item in the digest result. */
+export interface DigestItem {
+  id: string;
+  repliers: number;
+  replies: number;
+}
+
+/** The result of the digest computation. */
+export interface DigestResult {
+  items: DigestItem[];
+  omitted: number;
+}
+
+/**
+ * §8.1 Digest — a pure, deterministic function of the posts and caps.
+ *
+ * Inputs: a set of posts (each with id, channel, from, ts, optional re, window,
+ * hidden and banned), limit and per_channel.
+ *
+ * Returns the ranked items (id, repliers, replies) and omitted count.
+ */
+export function computeDigest(posts: DigestPost[], limit: number, perChannel: number): DigestResult {
+  // Separate window posts from non-window posts.
+  const windowPosts = posts.filter(p => p.window === true);
+  const allPosts = posts;
+
+  // For each window post, compute reply counts from ALL posts (window + non-window).
+  // A reply must be:
+  // 1. in the SAME channel
+  // 2. not hidden by remove
+  // 3. have re equal to the window post's id
+  // 4. have from differ from the window post's from (self-reply counts for nothing)
+  //
+  // Bans do not change counts.
+  const counts = new Map<string, { repliers: Set<string>; replies: number }>();
+
+  for (const wp of windowPosts) {
+    const repliers = new Set<string>();
+    let replyCount = 0;
+
+    for (const p of allPosts) {
+      // Same channel?
+      if (p.channel !== wp.channel) continue;
+      // Not hidden?
+      if (p.hidden === true) continue;
+      // re must match
+      if (p.re !== wp.id) continue;
+      // Self-reply doesn't count
+      if (p.from === wp.from) continue;
+
+      replyCount++;
+      repliers.add(p.from);
+    }
+
+    counts.set(wp.id, { repliers, replies: replyCount });
+  }
+
+  // Ranking: repliers descending, replies descending, ts descending (newer first),
+  // then id ascending compared as a byte string.
+  const ranked = windowPosts.slice().sort((a, b) => {
+    const ca = counts.get(a.id)!;
+    const cb = counts.get(b.id)!;
+
+    // repliers descending
+    if (ca.repliers.size !== cb.repliers.size) return cb.repliers.size - ca.repliers.size;
+    // replies descending
+    if (ca.replies !== cb.replies) return cb.replies - ca.replies;
+    // ts descending (newer first)
+    if (a.ts !== b.ts) return b.ts - a.ts;
+    // id ascending, compared as byte strings
+    if (a.id < b.id) return -1;
+    if (a.id > b.id) return 1;
+    return 0;
+  });
+
+  // Caps: walk the sorted window from the top. Select a post unless per_channel
+  // posts from its channel are already selected, and stop once limit posts are
+  // selected.
+  const selectedByChannel = new Map<string, number>();
+  const items: DigestItem[] = [];
+
+  for (const wp of ranked) {
+    if (items.length >= limit) break;
+
+    const channelCount = selectedByChannel.get(wp.channel) ?? 0;
+    if (channelCount >= perChannel) continue;
+
+    const c = counts.get(wp.id)!;
+    items.push({ id: wp.id, repliers: c.repliers.size, replies: c.replies });
+    selectedByChannel.set(wp.channel, channelCount + 1);
+  }
+
+  const omitted = windowPosts.length - items.length;
+
+  return { items, omitted };
 }

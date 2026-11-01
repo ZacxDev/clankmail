@@ -6,6 +6,8 @@ import {
   clankmailSign,
   verify,
   computeChannelId,
+  computeDigest,
+  type DigestPost,
 } from "./clankmail.ts";
 
 interface KeyEntry {
@@ -36,6 +38,33 @@ interface InvalidVector {
   error: string;
 }
 
+interface DigestPostVector {
+  id: string;
+  channel: string;
+  from: string;
+  ts: number;
+  re?: string;
+  window?: boolean;
+  hidden?: boolean;
+  banned?: boolean;
+}
+
+interface DigestItemVector {
+  id: string;
+  repliers: number;
+  replies: number;
+}
+
+interface DigestVector {
+  name: string;
+  why: string;
+  limit: number;
+  per_channel: number;
+  posts: DigestPostVector[];
+  items: DigestItemVector[];
+  omitted: number;
+}
+
 interface VectorsFile {
   spec: string;
   domain: string;
@@ -43,6 +72,7 @@ interface VectorsFile {
   derived: DerivedEntry;
   valid: ValidVector[];
   invalid: InvalidVector[];
+  digest: DigestVector[];
 }
 
 function main() {
@@ -87,12 +117,13 @@ function main() {
 
   // Each category on its own: one emptied category must not pass over the others.
   const derivedCount = Object.keys(data.derived ?? {}).length;
-  if (validCount === 0 || invalidCount === 0 || derivedCount === 0 || keys.size === 0) {
-    console.error(`Vector file has an empty category (keys=${keys.size} valid=${validCount} invalid=${invalidCount} derived=${derivedCount})`);
+  const digestCount = data.digest?.length ?? 0;
+  if (validCount === 0 || invalidCount === 0 || derivedCount === 0 || keys.size === 0 || digestCount === 0) {
+    console.error(`Vector file has an empty category (keys=${keys.size} valid=${validCount} invalid=${invalidCount} derived=${derivedCount} digest=${digestCount})`);
     process.exit(2);
   }
 
-  const totalVectors = validCount + invalidCount;
+  const totalVectors = validCount + invalidCount + digestCount;
 
   // Check valid vectors
   for (const v of data.valid ?? []) {
@@ -156,6 +187,44 @@ function main() {
       failures.push(`${v.name}: expected error ${v.error}, got OK (id=${result.id})`);
     } else if (result.error !== v.error) {
       failures.push(`${v.name}: expected error ${v.error}, got ${result.error}`);
+    }
+  }
+
+  // Check digest vectors
+  for (const d of data.digest ?? []) {
+    const posts: DigestPost[] = d.posts.map(p => ({
+      id: p.id,
+      channel: p.channel,
+      from: p.from,
+      ts: p.ts,
+      re: p.re,
+      window: p.window,
+      hidden: p.hidden,
+      banned: p.banned,
+    }));
+    const result = computeDigest(posts, d.limit, d.per_channel);
+
+    // Check items: same count, same ids, same order, same repliers and replies
+    if (result.items.length !== d.items.length) {
+      failures.push(`${d.name}: expected ${d.items.length} items, got ${result.items.length}`);
+      continue;
+    }
+    for (let i = 0; i < d.items.length; i++) {
+      const ei = d.items[i];
+      const gi = result.items[i];
+      if (ei.id !== gi.id) {
+        failures.push(`${d.name}: items[${i}] expected id ${ei.id}, got ${gi.id}`);
+      }
+      if (ei.repliers !== gi.repliers) {
+        failures.push(`${d.name}: items[${i}] expected repliers ${ei.repliers}, got ${gi.repliers}`);
+      }
+      if (ei.replies !== gi.replies) {
+        failures.push(`${d.name}: items[${i}] expected replies ${ei.replies}, got ${gi.replies}`);
+      }
+    }
+
+    if (result.omitted !== d.omitted) {
+      failures.push(`${d.name}: expected omitted ${d.omitted}, got ${result.omitted}`);
     }
   }
 
