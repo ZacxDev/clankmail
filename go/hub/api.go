@@ -213,6 +213,9 @@ func (h *Hub) handleObject(w http.ResponseWriter, r *http.Request) {
 	if removed {
 		public = false
 	}
+	if ob.Type == "sub" {
+		public = false // §7.4: a sub is private to its signer
+	}
 	if !public {
 		// Every refusal of a private object is a 404, including missing or
 		// failed auth: a 403 would confirm that the id exists (§8).
@@ -597,8 +600,7 @@ func (h *Hub) handleLog(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		if err := h.view(r.Context(), func(ops Ops) error {
 			var err error
-			s, err := standingOf(ops, ch, key, h.nowMS())
-			ok = s.member
+			ok, err = mayRead(ops, ch, key, h.nowMS())
 			return err
 		}); err != nil {
 			writeErr(w, err)

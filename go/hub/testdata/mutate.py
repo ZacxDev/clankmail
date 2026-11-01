@@ -18,7 +18,7 @@ import hashlib, os, shutil, subprocess, sys, tempfile
 SRC = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 WORK = tempfile.mkdtemp(prefix="hub-mutate-")
 
-H, A, S = "go/hub/hub.go", "go/hub/api.go", "go/hub/sqlite.go"
+H, A, S, D = "go/hub/hub.go", "go/hub/api.go", "go/hub/sqlite.go", "go/hub/digest.go"
 # (guard, file, old, new, test, expected substring in failing output)
 M = [
  # (guard, file, old, new, test, expected substring). Mutants keep every
@@ -55,7 +55,7 @@ M = [
  ("grant revoke does not revoke enrolled key", H, "\t\t\tif err := ops.RevokeKey(en.Agent); err != nil {", "\t\t\tif err := ops.RevokeKey(en.Agent + \"x\"); err != nil {", "TestRevokedAgentRejected", "want 403 E_REVOKED, got 200"),
  ("grant revoke silences un-enrolled key (old rule)", H, "\tenrolls, err := ops.EnrollsForGrant(gid)\n", "\tif g, _ := ops.Grant(gid); g != nil {\n\t\tops.RevokeKey(g.Agent)\n\t}\n\tenrolls, err := ops.EnrollsForGrant(gid)\n", "TestRevokeCannotSilenceUnenrolledKey", "submit rejected: 403"),
  ("revoke: same-signer check", H, "if !revocable || target.From != obj.From {", "if !revocable {", "TestRevokedAgentRejected", "want 403 E_FORBIDDEN, got 200"),
- ("revoke: target type check", H, 'revocable := target != nil && (target.Type == "grant" || target.Type == "handle" || target.Type == "enroll")', 'revocable := target != nil', "TestRevokeTargetType", "want 403 E_FORBIDDEN, got 200"),
+ ("revoke: target type check", H, 'revocable := target != nil && (target.Type == "grant" || target.Type == "handle" || target.Type == "enroll" || target.Type == "sub")', 'revocable := target != nil', "TestRevokeTargetType", "want 403 E_FORBIDDEN, got 200"),
  ("enroll withdrawal revokes key", H, "\t\t\t\treturn ops.RevokeEnroll(target.ID)\n", "\t\t\t\tops.RevokeKey(target.From)\n\t\t\t\treturn ops.RevokeEnroll(target.ID)\n", "TestRevokeOwnEnroll", "submit rejected: 403"),
  ("enroll withdrawal ignored", H, "\t\t\t\treturn ops.RevokeEnroll(target.ID)\n", "\t\t\t\treturn nil\n", "TestRevokeOwnEnroll", "withdrawn binding still listed"),
  ("enroll: agent must match grant", H, "if g == nil || g.Agent != obj.From {", "if g == nil {", "TestEnrollRules", "want 403 E_FORBIDDEN, got 200"),
@@ -164,6 +164,79 @@ M = [
  ("R3: refused token ids forgotten (each replay charges again)", H, "\t\tif charged && errors.As(err, &he) && he.status < 500 {", "\t\tif charged && errors.As(err, &he) && he.status < 500 && false {", "TestRejectedReplayCannotDrainVictimKeyLimit", "want 403 E_FORBIDDEN, got 429"),
  ("R3: remembered refusal not consulted", H, "\t\tif rj, ok := h.rejected[obj.ID]; ok {", "\t\tif rj, ok := h.rejected[obj.ID]; ok && false {", "TestRejectedReplayCannotDrainVictimKeyLimit", "want 403 E_FORBIDDEN, got 429"),
  ("R3: auth refusal after the key charge", H, 'if obj.Type == "auth" {', 'if obj.Type == "auth" && false {', "TestRejectedReplayCannotDrainVictimKeyLimit", "want 403 E_FORBIDDEN, got 429"),
+ # --- subscriptions (§7.4) ---
+ ("sub: unknown channel not 404", D, '\t\treturn nil, notFound("unknown channel")\n\t}\n\tif ok, err := mayRead(', '\t\treturn nil, forbidden("unknown channel")\n\t}\n\tif ok, err := mayRead(', "TestSubAcceptance", "want 404 E_NOT_FOUND, got 403"),
+ ("sub: members channel without membership", D, '\t} else if !ok {\n\t\treturn nil, forbidden("a read=members', '\t} else if !ok && false {\n\t\treturn nil, forbidden("a read=members', "TestDigestMembersOnlyChannel", "want 403 E_FORBIDDEN, got 200"),
+ ("sub: mayRead treats members as public", H, '\tif ch.Read == "public" {\n\t\treturn true, nil', '\tif ch.Read == "public" || true {\n\t\treturn true, nil', "TestDigestMembersOnlyChannel", "want 403 E_FORBIDDEN, got 200"),
+ ("sub: duplicate live sub accepted", D, "\t} else if cur != nil {", "\t} else if cur != nil && false {", "TestSubAcceptance", "want 403 E_FORBIDDEN, got"),
+ ("sub: live cap off", D, "\tif len(live) >= maxLiveSubs {", "\tif len(live) >= maxLiveSubs && false {", "TestSubAcceptance", "want 429 E_RATE, got 200"),
+ ("sub: live cap off by one (101)", D, "\tif len(live) >= maxLiveSubs {", "\tif len(live) > maxLiveSubs {", "TestSubAcceptance", "want 429 E_RATE, got 200"),
+ ("sub: replays history (start 0)", D, "StartSeq: head})", "StartSeq: 0 * head})", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("sub: public by id", A, '\tif ob.Type == "sub" {\n\t\tpublic = false', '\tif ob.Type == "sub" && false {\n\t\tpublic = false', "TestSubAcceptance", "want 404 E_NOT_FOUND, got 200"),
+ ("sub: revoke not applied", H, "\t\t\t\treturn ops.RevokeSub(target.ID)\n", "\t\t\t\treturn nil\n", "TestRevokedSubStopsDelivery", "after revoke: got"),
+ ("sub: not revocable", H, ' || target.Type == "sub")', ')', "TestRevokedSubStopsDelivery", "submit rejected: 403"),
+ ("subs: auth not required", D, "func (h *Hub) handleSubs(w http.ResponseWriter, r *http.Request) {\n\tkey, err := h.requireAuth(r, nil)\n\tif err != nil {", "func (h *Hub) handleSubs(w http.ResponseWriter, r *http.Request) {\n\tkey, err := h.requireAuth(r, nil)\n\tif err != nil && false {", "TestSubAcceptance", "want 401 E_AUTH, got 200"),
+ # --- digest (§8.1) ---
+ ("digest: auth not required", D, "\tkey, err := h.requireAuth(r, nil)\n\tif err != nil {\n\t\twriteErr(w, err)\n\t\treturn\n\t}\n\tif !h.digKeyRL", "\tkey, err := h.requireAuth(r, nil)\n\tif err != nil && false {\n\t\twriteErr(w, err)\n\t\treturn\n\t}\n\tif !h.digKeyRL", "TestSubAcceptance", "want 401 E_AUTH, got 200"),
+ ("digest r1: hidden posts served", S, "l.hidden=0 AND l.author!=? AND NOT EXISTS", "1=1 AND l.author!=? AND NOT EXISTS", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest r2: revoked sub still delivers", S, "o.subs(`key=? AND revoked=0`, key)", "o.subs(`key=? AND 1=1`, key)", "TestRevokedSubStopsDelivery", "after revoke: got"),
+ ("digest r2: posts before the sub served", D, "lo: max(after, s.StartSeq)", "lo: max(after, 0*s.StartSeq)", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest r3: unreadable channel scanned (readability filter off)", D, "} else if ok {\n\t\t\tstreams = append(", "} else if ok || true {\n\t\t\tstreams = append(", "TestDigestMembersOnlyChannel", "after leave: got"),
+ ("digest r3: unreadable channel scanned (cost)", D, "} else if ok {\n\t\t\tstreams = append(", "} else if ok || true {\n\t\t\tstreams = append(", "TestDigestScanCost", "unreadable channel: read ["),
+ ("digest r4: own posts served", S, "l.author!=? AND NOT EXISTS", "(l.author!=? OR 1) AND NOT EXISTS", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest r5: banned author served", S, "b.key=l.author AND ` + banLiveSQL", "b.key=l.author AND 0 AND ` + banLiveSQL", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest ban: forever ban not live (SQL)", H, "const banLiveSQL = `(b.until=0 OR b.until>?)`", "const banLiveSQL = `(0 OR b.until>?)`", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest ban: until boundary >= (SQL)", H, "const banLiveSQL = `(b.until=0 OR b.until>?)`", "const banLiveSQL = `(b.until=0 OR b.until>=?)`", "TestDigestBanExpiry", "at until: got"),
+ ("digest counts: re not stored on append", H, "ops.AppendLog(ch.ID, obj.ID, re, now)", "ops.AppendLog(ch.ID, obj.ID, re[:0], now)", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest cursor: does not advance past examined rows", D, "\t\ttop.buf = top.buf[1:]\n\t\tnext = row.Seq\n", "\t\ttop.buf = top.buf[1:]\n\t\tnext = next + 0*row.Seq\n", "TestDigestScanCost", "pages (read, next, more, items)"),
+ ("digest cursor: not moved to head when every log is read", D, "\t\t\tnext = max(next, head)\n", "\t\t\tnext = max(next, 0*head)\n", "TestDigestScanCost", "unreadable channel: read [0]"),
+ ("digest cursor: budget stop treated as end of log (skips posts)", D, "\t\t\t\t\tmore = true // budget spent with rows left to read\n\t\t\t\t\tbreak scan\n", "\t\t\t\t\tif h, _ := ops.LogHead(); h > 0 {\n\t\t\t\t\t\tnext = h // budget spent with rows left to read\n\t\t\t\t\t}\n\t\t\t\t\tbreak scan\n", "TestDigestPagesCoverEveryPostOnce", "pages covered"),
+ ("digest merge: not in cursor order", D, "st.buf[0].Seq < top.buf[0].Seq", "st.buf[0].Seq > top.buf[0].Seq", "TestDigestPagesCoverEveryPostOnce", "pages covered"),
+ ("digest budget: 2000 -> 2001", D, "digestScanBudget   = 2000", "digestScanBudget   = 2001", "TestDigestScanCost", "pages (read, next, more, items)"),
+ ("digest budget: off (2000 -> 1<<30)", D, "digestScanBudget   = 2000", "digestScanBudget   = 1 << 30", "TestDigestScanCost", "pages (read, next, more, items)"),
+ ("digest window: never cut", D, "\t\t\tif len(win) == digestWindow {", "\t\t\tif len(win) == digestWindow && false {", "TestDigestWindow", "first window"),
+ ("digest window: 999", D, "digestWindow       = 1000", "digestWindow       = 999 ", "TestDigestWindow", "first window"),
+ ("digest window: stream ends after one batch", D, "st.buf, st.done = rows, len(rows) < n", "st.buf, st.done = rows, len(rows) <= n", "TestDigestWindow", "first window"),
+ ("digest memory: token read for every window post", D, "\t\t\twin = append(win, winPost{row, top.ch})\n", "\t\t\twin = append(win, winPost{row, top.ch})\n\t\t\tif ob, _ := ops.Object(row.ID); ob != nil {\n\t\t\t\tdefer func(string) {}(ob.Token)\n\t\t\t}\n", "TestDigestMemoryBounded", "one digest allocated"),
+ ("digest plan: scan needs a sort", S, "WHERE l.channel=? AND l.seq>? ORDER BY l.seq LIMIT ?", "WHERE l.channel=? AND l.seq>? ORDER BY l.recv, l.seq LIMIT ?", "TestDigestQueryPlans", "scan plan sorts or scans"),
+ ("migration: (channel, re) index not created", S, "db.Exec(`CREATE INDEX IF NOT EXISTS chan_log_re ON chan_log(channel, re)`)", "db.Exec(`SELECT 1`)", "TestLogReMigration", "submit rejected: 500 map[detail:internal error"),  # replies seek it by INDEXED BY, so a missing index fails the first reply
+ ("digest rate limit: per key off", D, "\tif !h.digKeyRL.allow(h.nowMS(), key) {", "\tif !h.digKeyRL.allow(h.nowMS(), key) && false {", "TestDigestRateLimit", "key burst of 30: want 429 E_RATE, got 200"),
+ ("digest rate limit: per address off", D, "\tif !h.digIPRL.allow(h.nowMS(), h.clientAddr(r)) {", "\tif !h.digIPRL.allow(h.nowMS(), h.clientAddr(r)) && false {", "TestDigestRateLimit", "address burst of 120: want 429 E_RATE, got 200"),
+ ("digest rate limit: key burst 30 -> 31", "go/hub/ratelimit.go", "DefaultDigestKeyLimit = Limit{Burst: 30, PerSec: 0.5}", "DefaultDigestKeyLimit = Limit{Burst: 31, PerSec: 0.5}", "TestDigestRateLimit", "key burst of 30: want 429 E_RATE, got 200"),
+ ("digest rate limit: key refill 0.5/s -> 1/s", "go/hub/ratelimit.go", "DefaultDigestKeyLimit = Limit{Burst: 30, PerSec: 0.5}", "DefaultDigestKeyLimit = Limit{Burst: 30, PerSec: 1}", "TestDigestRateLimit", "key refill of 0.5/s: want 429 E_RATE, got 200"),
+ ("digest rate limit: address burst 120 -> 121", "go/hub/ratelimit.go", "DefaultDigestIPLimit  = Limit{Burst: 120, PerSec: 2}", "DefaultDigestIPLimit  = Limit{Burst: 121, PerSec: 2}", "TestDigestRateLimit", "address burst of 120: want 429 E_RATE, got 200"),
+ ("digest query: limit 51 accepted", D, "if perr != nil || n < 1 || n > digestMaxParam {", "if perr != nil || n < 1 {", "TestDigestCursor", "want 400 E_QUERY, got 200"),
+ ("digest query: default per_channel 5 -> 6", D, "digestDefaultPerCh = 5", "digestDefaultPerCh = 6", "TestDigestDefaultsAndCaps", "?: got"),
+ ("digest query: default limit 20 -> 21", D, "digestDefaultLimit = 20", "digestDefaultLimit = 21", "TestDigestDefaultsAndCaps", "?per_channel=50: got"),
+ ("migration: re not backfilled", S, "fill[seq] = storedFields(tok).Re", "fill[seq] = storedFields(tok).Re[:0]", "TestLogReMigration", "migrated digest"),
+ ("log: members check bypassed via mayRead", A, "\t\t\tok, err = mayRead(ops, ch, key, h.nowMS())\n", "\t\t\tok, err = key == key, nil\n", "TestMembersOnlyChannelLog", "want 403 E_FORBIDDEN, got 200"),
+ # --- stored reply counters (§8.1) ---
+ ("counters: reply not counted on append", S, "\tif re != \"\" {\n\t\tif err := o.countReply(channel, re, author, +1); err != nil {", "\tif re != \"\" && false {\n\t\tif err := o.countReply(channel, re, author, +1); err != nil {", "TestReplyCountersMatchRecount", "stored counters differ from the recount"),
+ ("counters: replies not incremented (repliers are)", S, "SET replies=replies+?, repliers=repliers+?", "SET replies=replies+0*?, repliers=repliers+?", "TestReplyCountersMatchRecount", "reply_authors says"),  # caught by the chan_log/reply_authors consistency check
+ ("counters: not decremented on remove", S, "\treturn o.countReply(channel, re, author, -1)\n", "\treturn o.countReply(channel, re, author, 0*-1)\n", "TestReplyCountersMatchRecount", "stored counters differ from the recount"),
+ ("counters: re-remove decrements again", S, "\tif err != nil || !ok || hidden {\n\t\treturn err\n\t}\n\tif err := o.exec(`UPDATE chan_log SET hidden=1", "\tif err != nil || !ok {\n\t\treturn err\n\t}\n\tif err := o.exec(`UPDATE chan_log SET hidden=1", "TestReRemoveDecrementsOnce", "re-removing a reply: P stored [0 0], want [1 1]"),
+ ("counters: replier dropped on any removal (multiplicity)", S, "\tcase d < 0 && n == 0:", "\tcase d < 0:", "TestReplyCountersMatchRecount", "reply_authors says"),
+ ("counters: replier added on every reply (multiplicity)", S, "\tcase d > 0 && n == 1:", "\tcase d > 0:", "TestReplyCountersMatchRecount", "reply_authors says"),
+ ("counters: self-reply counted (append)", S, "\tif err != nil || !ok || pa == author {", "\tif err != nil || !ok || pa == author && false {", "TestReplyCountersMatchRecount", "stored counters differ from the recount"),
+ ("counters: self-reply counted (earlier replies)", S, "WHERE channel=? AND re=? AND hidden=0 AND author!=? GROUP BY author", "WHERE channel=? AND re=? AND hidden=0 AND (author!=? OR 1) GROUP BY author", "TestReplyCountersMatchRecount", "stored counters differ from the recount"),
+ ("counters: cross-channel reply counted (append)", S, "\tpa, _, ok, err := o.LogEntry(channel, parent)\n", "\tvar pch string\n\tok, err := one(o.queryRow(`SELECT author, channel FROM chan_log WHERE obj_id=?`, parent), new(string), &pch)\n\tpa, _, _, _ := o.LogEntry(pch, parent)\n\tchannel = pch\n", "TestReplyCountersMatchRecount", "stored counters differ from the recount"),
+ ("counters: earlier replies not counted for a new post", S, "WHERE channel=? AND re=? AND hidden=0 AND author!=? GROUP BY author", "WHERE channel=? AND re=? AND hidden=0 AND author!=? AND 0 GROUP BY author", "TestReplyCountersMatchRecount", "stored counters differ from the recount"),
+ ("counters: hidden earlier replies counted for a new post", S, "WHERE channel=? AND re=? AND hidden=0 AND author!=? GROUP BY author", "WHERE channel=? AND re=? AND author!=? GROUP BY author", "TestReplyCountersMatchRecount", "stored counters differ from the recount"),
+ ("recount: not run on open (first open)", S, "\tif err := recountReplies(tx); err != nil {", "\tif err := error(nil); err != nil && recountReplies(tx) != nil {", "TestReplyCountBackfill", "first open: back-filled counters differ from the recount"),
+ ("recount: not run on open (after an older binary)", S, "\tif err := recountReplies(tx); err != nil {", "\tif err := error(nil); err != nil && recountReplies(tx) != nil {", "TestCountersRecountedAfterOlderBinary", "P's counted repliers [k_b k_e], want"),
+ ("recount: before migrateLogRe (re NULL rows not counted)", S, "\tif err := migrateLogRe(db); err != nil {\n\t\tdb.Close()\n\t\treturn nil, err\n\t}\n\tif err := migrateReplyCounts(db); err != nil {\n\t\tdb.Close()\n\t\treturn nil, err\n\t}\n", "\tif err := migrateReplyCounts(db); err != nil {\n\t\tdb.Close()\n\t\treturn nil, err\n\t}\n\tif err := migrateLogRe(db); err != nil {\n\t\tdb.Close()\n\t\treturn nil, err\n\t}\n", "TestCountersRecountedAfterOlderBinary", "P's counted repliers [k_b k_c], want"),
+ ("counters: decrement of an uncounted reply inserts n=-1", S, "ok, err := one(o.queryRow(`UPDATE reply_authors SET n=n+? WHERE post=? AND author=? RETURNING n`, d, parent, author), &n)", "ok, err := one(o.queryRow(`INSERT INTO reply_authors(post, author, n) VALUES(?,?,?)\n\t\tON CONFLICT(post, author) DO UPDATE SET n=n+excluded.n RETURNING n`, parent, author, d), &n)", "TestCountReplyDecrementFloor", "removing an uncounted reply: 1 reply_authors rows for P"),
+ ("counters: decrement of an uncounted reply goes below zero", S, "\t\tif !ok {\n\t\t\treturn nil // not counted", "\t\tif !ok && false {\n\t\t\treturn nil // not counted", "TestCountReplyDecrementFloor", "m_P: chan_log counters [-1 -1], reply_authors says [0 0]"),
+ ("back-fill: not from scratch", S, "\t\t`DELETE FROM reply_authors`,\n", "", "TestReplyCountBackfill", "UNIQUE constraint failed: reply_authors.post"),
+ ("back-fill: stale counters not reset", S, "\t\t`UPDATE chan_log SET replies=0, repliers=0 WHERE replies!=0 OR repliers!=0`,\n", "", "TestReplyCountBackfill", "reply_authors says"),  # stale rows left at +7: the consistency check sees them
+ ("back-fill: hidden reply counted", S, "WHERE r.hidden=0 AND r.re!='' AND r.author!=p.author", "WHERE r.re!='' AND r.author!=p.author", "TestReplyCountBackfill", "first open: back-filled counters differ from the recount"),
+ ("back-fill: self-reply counted", S, "WHERE r.hidden=0 AND r.re!='' AND r.author!=p.author", "WHERE r.hidden=0 AND r.re!='' AND (r.author!=p.author OR 1)", "TestReplyCountBackfill", "first open: back-filled counters differ from the recount"),
+ ("back-fill: cross-channel reply counted", S, "JOIN chan_log p ON p.channel=r.channel AND p.obj_id=r.re", "JOIN chan_log p ON p.obj_id=r.re", "TestReplyCountBackfill", "first open: back-filled counters differ from the recount"),
+ ("digest: counters swapped on read", S, "&r.TS, &r.Replies, &r.Repliers, &r.Eligible", "&r.TS, &r.Repliers, &r.Replies, &r.Eligible", "TestDigestMatchesReference", "limit 50 per_channel 50:"),
+ ("digest: counters not passed to ranking", D, "Repliers: p.Repliers, Replies: p.Replies}", "Repliers: 0 * p.Repliers, Replies: p.Replies}", "TestDigestEligibilityAndRanking", "bob's digest: got"),
+ ("digest: per-request reply count (cost)", S, "ob.ts, l.replies, l.repliers,", "ob.ts, (SELECT COUNT(*) FROM chan_log r WHERE r.channel=l.channel AND r.re=l.obj_id AND r.hidden=0 AND r.author!=l.author), l.repliers,", "TestDigestCostIndependentOfReplies", "digest time grows with replies"),
+ ("digest: per-request reply count (plan)", S, "ob.ts, l.replies, l.repliers,", "ob.ts, (SELECT COUNT(*) FROM chan_log r WHERE r.channel=l.channel AND r.re=l.obj_id AND r.hidden=0 AND r.author!=l.author), l.repliers,", "TestDigestStatementPlans", "digest plan reads replies or scans"),
+ ("submit: parent found by a channel scan", S, "SELECT author, hidden FROM chan_log INDEXED BY chan_log_obj WHERE", "SELECT author, hidden FROM chan_log INDEXED BY chan_log_channel WHERE", "TestSubmitPathPlans", "submit path scans"),
 ]
 
 GO = os.path.realpath(shutil.which("go"))  # resolved once: a profile switch mid-run must not lose it

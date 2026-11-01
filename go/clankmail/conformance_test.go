@@ -25,6 +25,14 @@ func TestConformance(t *testing.T) {
 			PayloadB64                       string `json:"payload_b64"`
 		}
 		Invalid []struct{ Name, Token, Error string }
+		Digest  []struct {
+			Name       string
+			Limit      int
+			PerChannel int `json:"per_channel"`
+			Posts      []DigestPost
+			Items      []DigestItem
+			Omitted    int
+		}
 	}
 	if err := json.Unmarshal(raw, &vec); err != nil {
 		t.Fatal(err)
@@ -32,7 +40,7 @@ func TestConformance(t *testing.T) {
 	if vec.Domain != Domain {
 		t.Fatalf("domain %q", vec.Domain)
 	}
-	if len(vec.Valid) == 0 || len(vec.Invalid) == 0 || len(vec.Derived) == 0 {
+	if len(vec.Valid) == 0 || len(vec.Invalid) == 0 || len(vec.Derived) == 0 || len(vec.Digest) == 0 {
 		t.Fatal("no vectors loaded")
 	}
 	priv := map[string]ed25519.PrivateKey{}
@@ -59,6 +67,19 @@ func TestConformance(t *testing.T) {
 			if want, ok := vec.Derived[v.Name+".channel_id"]; ok {
 				if got := ChannelID(payload); got != want {
 					t.Errorf("channel id %s != %s", got, want)
+				}
+			}
+		})
+	}
+	for _, c := range vec.Digest {
+		t.Run("digest/"+c.Name, func(t *testing.T) {
+			items, omitted := RankDigest(c.Posts, c.Limit, c.PerChannel)
+			if len(items) != len(c.Items) || omitted != c.Omitted {
+				t.Fatalf("got %v omitted %d, want %v omitted %d", items, omitted, c.Items, c.Omitted)
+			}
+			for i := range items {
+				if items[i] != c.Items[i] {
+					t.Errorf("item %d: got %+v, want %+v", i, items[i], c.Items[i])
 				}
 			}
 		})

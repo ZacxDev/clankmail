@@ -109,6 +109,8 @@ let channelId = "";
 let postId = "";
 let replyId = "";
 let dmId = "";
+let subId = "";
+let subToken = "";
 
 step("handle", async () => {
   const h = sign(principal, "handle", { name: handleName, hub: HUB });
@@ -165,6 +167,27 @@ step("discovery", async () => {
   }
 });
 
+/** The requester's live subscriptions (§8 GET /v1/subs), as token strings. */
+async function liveSubs(k: Key): Promise<string[]> {
+  const r = await ok("GET", "/v1/subs", { auth: auth(k, "GET", "/v1/subs", "") });
+  return (r.items as { channel: string; token: string }[]).filter(i => i.channel === channelId).map(i => i.token);
+}
+
+step("subscribe", async () => {
+  // Before anyone posts: a sub covers only posts that arrive after it (§7.4).
+  if (!channelId) throw new Error("skipped: no channel");
+  const s = sign(agentA, "sub", { channel: channelId });
+  await submit(s.token, s.id);
+  subId = s.id;
+  subToken = s.token;
+  // The listing serves the sub back; it must pass §4 as the same sub, byte for byte.
+  const subs = await liveSubs(agentA);
+  if (subs.length !== 1 || subs[0] !== s.token) throw new Error(`live subs ${JSON.stringify(subs)}, want the sub just submitted`);
+  check(subs[0], "subs[0]", { id: s.id, t: "sub", from: agentA.id });
+  const anon = await call("GET", `/v1/objects/${s.id}`);
+  if (anon.status !== 404) throw new Error(`anonymous fetch of a sub: HTTP ${anon.status}, want 404 (private to its signer)`);
+});
+
 step("channel-log", async () => {
   if (!channelId) throw new Error("skipped: no channel");
   const j = sign(agentB, "join", { channel: channelId });
@@ -187,6 +210,35 @@ step("channel-log", async () => {
   }
   const reply = check(items[1].token, "log[1]", { id: replyId, from: agentA.id });
   if (reply.re !== postId) throw new Error(`reply re=${String(reply.re)}, want ${postId}`);
+});
+
+step("digest", async () => {
+  // A subscribes; B has posted (postId, which A replied to) and posts once more.
+  // §8.1 ranking: postId has 1 replier, the newer p2 has none, so postId comes
+  // first; A's own reply is not in A's digest. Every item is a post token, a
+  // type ts/clankmail.ts knows, so each is verified with the §4 pipeline.
+  if (!subId || !postId || !replyId) throw new Error("skipped: no sub or posts");
+  const p2 = sign(agentB, "msg", { to: [channelId], body: "second post from agent b" });
+  await submit(p2.token, p2.id);
+  const path = "/v1/digest?limit=50";
+  const r = await ok("GET", path, { auth: auth(agentA, "GET", path, "") });
+  const items = r.items as { token: string; unsigned: { repliers: number; replies: number } }[];
+  const got = items.map((it, i) => {
+    check(it.token, `digest[${i}]`, { t: "msg" });
+    const v = verify(it.token);
+    return v.ok ? `${v.id}:${it.unsigned.repliers}/${it.unsigned.replies}` : "";
+  });
+  const want = [`${postId}:1/1`, `${p2.id}:0/0`];
+  if (JSON.stringify(got) !== JSON.stringify(want)) {
+    throw new Error(`digest ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+  }
+  if (r.omitted !== 0 || r.more !== false || typeof r.next !== "string") {
+    throw new Error(`digest omitted=${r.omitted} more=${r.more} next=${r.next}`);
+  }
+  // The cursor has moved past both: the next digest from it is empty.
+  const path2 = `/v1/digest?after=${encodeURIComponent(r.next)}`;
+  const r2 = await ok("GET", path2, { auth: auth(agentA, "GET", path2, "") });
+  if ((r2.items as unknown[]).length !== 0) throw new Error(`digest after next has ${(r2.items as unknown[]).length} items, want 0`);
 });
 
 // The good request of the auth pair; kept so the negative step can replay it.
@@ -236,6 +288,13 @@ step("cleanup", async () => {
   if (dmId) {
     const p = `/v1/allow/${agentA.id}`;
     await ok("DELETE", p, { auth: auth(agentB, "DELETE", p, "") });
+  }
+  if (subId) {
+    // §6.3: a sub ends with a revoke from its own signer.
+    const rv = sign(agentA, "revoke", { target: subId });
+    await submit(rv.token, rv.id);
+    const subs = await liveSubs(agentA);
+    if (subs.includes(subToken)) throw new Error("sub still live after its revoke");
   }
   if (channelId) {
     for (const k of [agentB, agentA]) {

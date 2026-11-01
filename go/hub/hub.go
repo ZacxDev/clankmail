@@ -53,6 +53,10 @@ type Config struct {
 	Now      func() time.Time // injectable clock; defaults to time.Now
 	KeyLimit Limit            // per signer key on submit; zero value = DefaultKeyLimit
 	IPLimit  Limit            // per client address on submit; zero value = DefaultIPLimit
+	// DigestKeyLimit and DigestIPLimit limit GET /v1/digest per key and per
+	// client address; zero value = DefaultDigestKeyLimit / DefaultDigestIPLimit.
+	DigestKeyLimit Limit
+	DigestIPLimit  Limit
 	// TrustedProxies are the front proxies whose X-Forwarded-For (or
 	// ClientIPHeader, when set) is believed (§5). Empty: the TCP peer is the
 	// client.
@@ -89,6 +93,8 @@ type Hub struct {
 	mu        sync.Mutex // serialises submissions: check-then-apply must not interleave
 	keyRL     *limiter
 	ipRL      *limiter
+	digKeyRL  *limiter
+	digIPRL   *limiter
 }
 
 // New returns a Hub. Rate limits are always on: a zero Limit means the default.
@@ -119,7 +125,14 @@ func New(cfg Config) (*Hub, error) {
 	if cfg.IPLimit == (Limit{}) {
 		cfg.IPLimit = DefaultIPLimit
 	}
-	h := &Hub{cfg: cfg, mux: http.NewServeMux(), keyRL: newLimiter(cfg.KeyLimit), ipRL: newLimiter(cfg.IPLimit)}
+	if cfg.DigestKeyLimit == (Limit{}) {
+		cfg.DigestKeyLimit = DefaultDigestKeyLimit
+	}
+	if cfg.DigestIPLimit == (Limit{}) {
+		cfg.DigestIPLimit = DefaultDigestIPLimit
+	}
+	h := &Hub{cfg: cfg, mux: http.NewServeMux(), keyRL: newLimiter(cfg.KeyLimit), ipRL: newLimiter(cfg.IPLimit),
+		digKeyRL: newLimiter(cfg.DigestKeyLimit), digIPRL: newLimiter(cfg.DigestIPLimit)}
 	h.mux.HandleFunc("POST /v1/submit", h.handleSubmit)
 	h.mux.HandleFunc("GET /v1/objects/{id}", h.handleObject)
 	h.mux.HandleFunc("GET /v1/inbox", h.handleInbox)
@@ -129,6 +142,8 @@ func New(cfg Config) (*Hub, error) {
 	h.mux.HandleFunc("GET /v1/channels", h.handleDiscovery)
 	h.mux.HandleFunc("GET /v1/channels/{ref}", h.handleChannel)
 	h.mux.HandleFunc("GET /v1/channels/{id}/log", h.handleLog)
+	h.mux.HandleFunc("GET /v1/subs", h.handleSubs)
+	h.mux.HandleFunc("GET /v1/digest", h.handleDigest)
 	h.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, &hubErr{http.StatusNotFound, ENotFound, "no such endpoint"})
 	})
@@ -433,12 +448,15 @@ func (h *Hub) authorize(ops Ops, obj *clankmail.Object, stored *Obj, now int64) 
 		if err != nil {
 			return nil, err
 		}
-		revocable := target != nil && (target.Type == "grant" || target.Type == "handle" || target.Type == "enroll")
+		revocable := target != nil && (target.Type == "grant" || target.Type == "handle" || target.Type == "enroll" || target.Type == "sub")
 		if !revocable || target.From != obj.From {
-			return nil, forbidden("target must be a grant, handle or enroll signed by the same key")
+			return nil, forbidden("target must be a grant, handle, enroll or sub signed by the same key")
 		}
 		return func() error {
 			switch target.Type {
+			case "sub":
+				// §7.4: ends that subscription and nothing else.
+				return ops.RevokeSub(target.ID)
 			case "handle":
 				cur, err := ops.HandleByKey(obj.From)
 				if err != nil || cur == nil || cur.ObjID != target.ID {
@@ -505,6 +523,9 @@ func (h *Hub) authorize(ops Ops, obj *clankmail.Object, stored *Obj, now int64) 
 
 	case "msg":
 		return h.authorizeMsg(ops, obj, stored, now)
+
+	case "sub":
+		return h.authorizeSub(ops, obj, now)
 	}
 	return nil, forbidden("type " + obj.Type + " is not accepted by this hub")
 }
@@ -728,7 +749,25 @@ func banned(ops Ops, ch *Channel, key string, now int64) (bool, error) {
 	if err != nil || !ok {
 		return false, err
 	}
-	return until == 0 || until > now, nil
+	return banLive(until, now), nil
+}
+
+// banLive is the single definition of a live ban (§7.3): until 0 = forever.
+func banLive(until, now int64) bool { return until == 0 || until > now }
+
+// banLiveSQL is banLive as SQL over a bans row aliased b, taking now as its
+// one parameter. The digest (§8.1) filters in the store with it; it must say
+// exactly what banLive says (TestDigestBanExpiry pins both).
+const banLiveSQL = `(b.until=0 OR b.until>?)`
+
+// mayRead reports whether key may read ch's log (§8): anyone for read=public,
+// an unbanned member for read=members. Subscriptions and the digest use it.
+func mayRead(ops Ops, ch *Channel, key string, now int64) (bool, error) {
+	if ch.Read == "public" {
+		return true, nil
+	}
+	s, err := standingOf(ops, ch, key, now)
+	return s.member, err
 }
 
 func (h *Hub) authorizeMembership(ops Ops, obj *clankmail.Object, stored *Obj, now int64) (func() error, error) {
@@ -858,7 +897,8 @@ func (h *Hub) authorizeMsg(ops Ops, obj *clankmail.Object, stored *Obj, now int6
 		if err := canPost(ops, ch, obj.From, now); err != nil {
 			return nil, err
 		}
-		return func() error { return ops.AppendLog(ch.ID, obj.ID, now) }, nil
+		re, _ := obj.Fields["re"].(string)
+		return func() error { return ops.AppendLog(ch.ID, obj.ID, re, now) }, nil
 	}
 
 	// Direct delivery (§7.2): one stored token, one inbox entry per recipient.

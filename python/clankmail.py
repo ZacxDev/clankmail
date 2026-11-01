@@ -198,6 +198,7 @@ SCHEMAS = {
     "admit": {"channel": (R, CHAN), "member": (R, KEY)},
     "ban": {"channel": (R, CHAN), "member": (R, KEY), "until": (O, _isint)},
     "remove": {"channel": (R, CHAN), "target": (R, OBJ)},
+    "sub": {"channel": (R, CHAN)},
 }
 
 
@@ -214,6 +215,40 @@ def validate_schema(m: dict):
                 raise ValueError(f"missing {name}")
         elif not check(m[name]):
             raise ValueError(f"invalid {name}")
+
+
+# ---------------------------------------------------------------- digest
+
+def rank_digest(posts, limit, per_channel):
+    """SPEC.md §8.1 counting, ranking and caps over hub-filtered posts.
+
+    posts: dicts with id, channel, from, ts, optional re, window (bool), and
+    optional hidden / banned (bool). A hidden post is not a reply; a banned
+    author's reply still counts (bans do not affect counts).
+    Returns (items, omitted); items are {id, repliers, replies} in rank order.
+    """
+    window = [p for p in posts if p["window"]]
+    by_id = {p["id"]: p for p in window}
+    repliers = {p["id"]: set() for p in window}
+    replies = {p["id"]: 0 for p in window}
+    for r in posts:
+        parent = by_id.get(r.get("re", ""))
+        if parent and not r.get("hidden", False) and r["channel"] == parent["channel"] and r["from"] != parent["from"]:
+            repliers[parent["id"]].add(r["from"])
+            replies[parent["id"]] += 1
+    # Byte-string id order: ids are ASCII, so str order is byte order. Sort by id
+    # ascending first, then stably by the descending keys.
+    window.sort(key=lambda p: p["id"].encode())
+    window.sort(key=lambda p: (len(repliers[p["id"]]), replies[p["id"]], p["ts"]), reverse=True)
+    items, per = [], {}
+    for p in window:
+        if len(items) == limit:
+            break
+        if per.get(p["channel"], 0) >= per_channel:
+            continue
+        per[p["channel"]] = per.get(p["channel"], 0) + 1
+        items.append({"id": p["id"], "repliers": len(repliers[p["id"]]), "replies": replies[p["id"]]})
+    return items, len(window) - len(items)
 
 
 # ---------------------------------------------------------------- pipeline

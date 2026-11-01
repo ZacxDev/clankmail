@@ -67,6 +67,29 @@ type Channel struct {
 	Mods       []string
 }
 
+// Sub is a subscription (§7.4). StartSeq is the channel-log cursor head when
+// it was accepted: it covers posts with a greater cursor.
+type Sub struct {
+	ID       string
+	Key      string
+	Channel  string
+	StartSeq int64
+	Revoked  bool
+}
+
+// LogRow is a channel-log row as the digest scan reads it (§8.1): never the
+// token, which the digest fetches only for the posts it returns.
+type LogRow struct {
+	Seq      int64
+	ID       string
+	Author   string
+	Re       string
+	TS       int64
+	Replies  int  // stored §8.1 count of this post's replies
+	Repliers int  // stored §8.1 count of its distinct repliers
+	Eligible bool // not hidden, not by the reader, author not under a live ban
+}
+
 // Entry is one item of a cursor-paged stream (inbox or channel log).
 type Entry struct {
 	Seq    int64
@@ -120,11 +143,26 @@ type Ops interface {
 	BanUntil(channel, key string) (until int64, rank int, banned bool, err error)
 	LiftBan(channel, key string) error
 
-	AppendLog(channel, objID string, recv int64) error
+	// AppendLog appends a post (re: its re, "" if none) and updates the
+	// stored reply counters (§8.1) in the same transaction.
+	AppendLog(channel, objID, re string, recv int64) error
 	LogEntry(channel, objID string) (author string, hidden, ok bool, err error)
+	// HideLog hides a post and, the first time, takes it out of the stored
+	// counters of the post it replies to.
 	HideLog(channel, objID string) error
 	Log(channel string, after int64, limit int) ([]Entry, error) // hidden posts excluded
 	PostsSince(channel string, since int64) (int, error)
+	LogHead() (int64, error) // greatest channel-log cursor, 0 when empty
+
+	PutSub(s Sub) error
+	LiveSub(key, channel string) (*Sub, error)
+	LiveSubs(key string) ([]Sub, error) // arrival order
+	RevokeSub(id string) error
+	// DigestScan returns up to limit rows of channel's log with a cursor
+	// greater than after, in cursor order, hidden ones included; Eligible
+	// applies §8.1 rules 1, 4 and 5 for reader at hub time now. Each row
+	// carries the post's stored reply counters.
+	DigestScan(reader, channel string, after int64, limit int, now int64) ([]LogRow, error)
 
 	// UseAuth records an auth id. It reports false if the id was already used.
 	UseAuth(id string, ts int64) (bool, error)

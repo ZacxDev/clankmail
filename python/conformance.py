@@ -48,6 +48,16 @@ def main(path: str) -> int:
         except Exception as e:
             problems.append(f"want {v['error']}, crashed with {type(e).__name__}: {e}")
         fails, passes = report("invalid", v["name"], problems, fails, passes)
+    assert vec.get("digest"), "no digest cases to check"
+    for c in vec["digest"]:
+        problems = []
+        try:
+            items, omitted = clankmail.rank_digest(c["posts"], c["limit"], c["per_channel"])
+            if items != c["items"] or omitted != c["omitted"]:
+                problems.append(f"got {items} omitted {omitted}")
+        except Exception as e:
+            problems.append(f"crashed with {type(e).__name__}: {e}")
+        fails, passes = report("digest", c["name"], problems, fails, passes)
     print(f"python: {passes} passed, {fails} failed, {passes + fails} vectors")
     return 1 if fails or passes == 0 else 0
 

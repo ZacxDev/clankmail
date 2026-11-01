@@ -46,6 +46,18 @@ type invalid struct {
 	Error string `json:"error"`
 }
 
+// digestCase is one §8.1 counting/ranking/caps case. Its expected items are
+// written by hand below, never computed by the function they test.
+type digestCase struct {
+	Name       string          `json:"name"`
+	Why        string          `json:"why"`
+	Limit      int             `json:"limit"`
+	PerChannel int             `json:"per_channel"`
+	Posts      []am.DigestPost `json:"posts"`
+	Items      []am.DigestItem `json:"items"`
+	Omitted    int             `json:"omitted"`
+}
+
 type file struct {
 	Spec    string            `json:"spec"`
 	Domain  string            `json:"domain"`
@@ -53,6 +65,7 @@ type file struct {
 	Derived map[string]string `json:"derived"`
 	Valid   []valid           `json:"valid"`
 	Invalid []invalid         `json:"invalid"`
+	Digest  []digestCase      `json:"digest"`
 }
 
 var keys = map[string]*key{}
@@ -321,8 +334,22 @@ func main() {
 	s("schema-auth-body-short", "63 hex chars", hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"GET","path":"/","body":%q}`, emptySHA[:63]))
 	addValid("auth-nonce-min", bob, hdr("auth", bob)+fmt.Sprintf(`,"hub":"hub.example","method":"%s","path":"/","body":%q,"n":"n"}`, strings.Repeat("G", 16), emptySHA))
 
+	// ---- sub (§7.4). Ending a subscription is a revoke naming it (§6.3).
+	sub := addValid("sub", bob, hdr("sub", bob)+fmt.Sprintf(`,"channel":%q}`, ch))
+	addValid("sub-by-principal", alice, hdr("sub", alice)+fmt.Sprintf(`,"channel":%q}`, ch))
+	addValid("revoke-sub", bob, hdr("revoke", bob)+fmt.Sprintf(`,"target":%q}`, sub))
+	s("schema-sub-missing-channel", "sub without a channel", hdr("sub", bob)+`}`)
+	s("schema-sub-channel-slug", "a #slug is not a channel id in signed bytes", hdr("sub", bob)+`,"channel":"#llm-evals"}`)
+	s("schema-sub-channel-is-key", "channel must be a c_ id, not a k_ id", hdr("sub", bob)+fmt.Sprintf(`,"channel":%q}`, bob.ID))
+	s("schema-sub-channel-array", "channel is one id, not an array like msg.to", hdr("sub", bob)+fmt.Sprintf(`,"channel":[%q]}`, ch))
+	// Schema-valid, so only an implementation that knows the type reaches step 7;
+	// one that does not stops at step 6 with E_SCHEMA.
+	addInvalid("signer-mismatch-sub", "valid sub claiming from=bob, signed by alice", sign(alice, hdr("sub", bob)+fmt.Sprintf(`,"channel":%q}`, ch)), am.ESigner)
+
 	// ---- E_SIGNER
 	addInvalid("signer-mismatch", "valid object claiming from=bob, signed by alice", sign(alice, h+","+to+`,"body":"x"}`), am.ESigner)
+
+	out.Digest = digestCases(alice, bob, carol, scout)
 
 	// Self-check: every vector must agree with the reference pipeline.
 	for _, v := range out.Valid {
@@ -338,11 +365,24 @@ func main() {
 			die("invalid vector %s: want %s, got %v", v.Name, v.Error, err)
 		}
 	}
+	for _, c := range out.Digest {
+		for _, p := range c.Posts {
+			if p.Window && (p.Hidden || p.Banned) {
+				die("digest case %s: window post %s is hidden or banned, so not eligible", c.Name, p.ID)
+			}
+		}
+		items, omitted := am.RankDigest(c.Posts, c.Limit, c.PerChannel)
+		got, _ := json.Marshal(items)
+		want, _ := json.Marshal(c.Items)
+		if string(got) != string(want) || omitted != c.Omitted {
+			die("digest case %s: got %s omitted %d, want %s omitted %d", c.Name, got, omitted, want, c.Omitted)
+		}
+	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	if err := os.WriteFile(os.Args[1], append(b, '\n'), 0o644); err != nil {
 		die("%v", err)
 	}
-	fmt.Printf("wrote %d valid + %d invalid vectors\n", len(out.Valid), len(out.Invalid))
+	fmt.Printf("wrote %d valid + %d invalid vectors, %d digest cases\n", len(out.Valid), len(out.Invalid), len(out.Digest))
 }
 
 func fieldP() *big.Int {
@@ -546,5 +586,104 @@ func malleate(sig []byte) []byte {
 	for i := 31; i >= 0; i-- {
 		out = append(out, be[i])
 	}
+	return out
+}
+
+// digestCases builds the §8.1 cases. Ids are hashes of fixed names; where a
+// tie-break decides the order, the ids are assigned by sorting so that the
+// expected order holds only under the rule being pinned (see each comment).
+func digestCases(alice, bob, carol, scout *key) []digestCase {
+	pid := func(name string) string { return am.ObjectID([]byte("clankmail-vectors/digest/" + name)) }
+	cid := func(name string) string { return am.ChannelID([]byte("clankmail-vectors/digest-channel/" + name)) }
+	// pair returns two ids from names, smaller first.
+	pair := func(a, b string) (string, string) {
+		x, y := pid(a), pid(b)
+		if x > y {
+			x, y = y, x
+		}
+		return x, y
+	}
+	const t = int64(1767225600000)
+	X, Y := cid("x"), cid("y")
+	post := func(id, ch string, from *key, ts int64) am.DigestPost {
+		return am.DigestPost{ID: id, Channel: ch, From: from.ID, TS: ts, Window: true}
+	}
+	n := 0
+	reply := func(ch string, from *key, re string) am.DigestPost {
+		n++
+		return am.DigestPost{ID: pid(fmt.Sprintf("reply-%d", n)), Channel: ch, From: from.ID, TS: t + 1000 + int64(n), Re: re}
+	}
+	var out []digestCase
+
+	// 1. Each sort key decides exactly one adjacent pair:
+	//    A (2 repliers, 2 replies) above B (1, 3): repliers before replies;
+	//    B (1, 3, ts+20) above C (1, 1, ts+30): replies before ts;
+	//    F (0, 0, ts+50) above E (0, 0, ts+40) although E has the smaller id: ts before id;
+	//    C and D (1, 1, same ts): id ascending.
+	a, b := pid("rank-a"), pid("rank-b")
+	c, d := pair("rank-c", "rank-d")
+	e, f := pair("rank-e", "rank-f")
+	rank := []am.DigestPost{
+		post(a, X, alice, t+10), post(b, X, alice, t+20), post(c, X, bob, t+30), post(d, X, bob, t+30),
+		post(e, X, carol, t+40), post(f, X, scout, t+50),
+		reply(X, bob, a), reply(X, carol, a),
+		reply(X, bob, b), reply(X, bob, b), reply(X, bob, b),
+		reply(X, carol, c), reply(X, scout, d),
+	}
+	out = append(out, digestCase{"rank-order", "repliers, then replies, then ts (newer first), then id ascending", 20, 20, rank,
+		[]am.DigestItem{{a, 2, 2}, {b, 1, 3}, {c, 1, 1}, {d, 1, 1}, {f, 0, 0}, {e, 0, 0}}, 0})
+
+	// 2. What counts as a reply. P gets exactly 1 replier and 2 replies: bob twice
+	//    (one of them is itself a window post). Not counted: alice's self-reply,
+	//    bob's reply posted in channel Y, and anything aimed at Q, which is not in
+	//    the window and so is never returned.
+	p, q := pid("rules-p"), pid("rules-q")
+	inWin := reply(X, bob, p)
+	inWin.Window, inWin.TS = true, t+2
+	rules := []am.DigestPost{
+		post(p, X, alice, t+1), inWin, reply(X, bob, p), reply(X, alice, p), reply(Y, carol, p),
+		{ID: q, Channel: X, From: carol.ID, TS: t + 3}, reply(X, bob, q), reply(X, scout, q),
+	}
+	out = append(out, digestCase{"reply-rules", "self-replies and replies from another channel do not count; a non-window post is never returned", 20, 20, rules,
+		[]am.DigestItem{{p, 1, 2}, {inWin.ID, 0, 0}}, 0})
+
+	// 3. Caps: rank is x1 > x2 > x3 > y1 > y2. per_channel 2 skips x3, and
+	//    limit 3 stops before y2, so 2 window posts are omitted.
+	x1, x2, x3, y1, y2 := pid("caps-x1"), pid("caps-x2"), pid("caps-x3"), pid("caps-y1"), pid("caps-y2")
+	caps := []am.DigestPost{
+		post(x1, X, alice, t+1), post(x2, X, alice, t+2), post(x3, X, alice, t+3),
+		post(y1, Y, bob, t+5), post(y2, Y, bob, t+4),
+		reply(X, bob, x1), reply(X, carol, x1), reply(X, scout, x1),
+		reply(X, bob, x2), reply(X, carol, x2),
+		reply(X, bob, x3),
+	}
+	out = append(out, digestCase{"caps", "per_channel skips a lower post of a full channel; limit stops the walk", 3, 2, caps,
+		[]am.DigestItem{{x1, 3, 3}, {x2, 2, 2}, {y1, 0, 0}}, 2})
+
+	// 4. per_channel alone: one channel, three posts, newest wins.
+	k1, k2, k3 := pid("one-1"), pid("one-2"), pid("one-3")
+	one := []am.DigestPost{post(k1, Y, carol, t+7), post(k2, Y, carol, t+9), post(k3, Y, carol, t+8)}
+	out = append(out, digestCase{"per-channel-one", "per_channel 1 with limit 20 returns the top post of the only channel", 20, 1, one,
+		[]am.DigestItem{{k2, 0, 0}}, 2})
+
+	// 5. No window posts: nothing is returned and nothing is omitted.
+	none := []am.DigestPost{{ID: pid("none-1"), Channel: X, From: alice.ID, TS: t}, reply(X, bob, pid("none-1"))}
+	out = append(out, digestCase{"empty-window", "replies alone are never items", 20, 5, none, []am.DigestItem{}, 0})
+
+	// 6. Removes and bans. P gets 2 repliers and 2 replies: bob (two replies,
+	//    one removed, so 1 counted) and scout (banned, still counted). carol's
+	//    only reply to P is removed, so she is not a replier. Both of carol's
+	//    replies to Q are removed: Q counts 0. Counting hidden replies gives
+	//    P (3, 4) and Q (1, 2); excluding banned repliers gives P (1, 1).
+	cp, cq := pid("count-p"), pid("count-q")
+	hide := func(r am.DigestPost) am.DigestPost { r.Hidden = true; return r }
+	ban := func(r am.DigestPost) am.DigestPost { r.Banned = true; return r }
+	counted := []am.DigestPost{
+		post(cp, X, alice, t+1), post(cq, X, bob, t+2),
+		reply(X, bob, cp), hide(reply(X, bob, cp)), hide(reply(X, carol, cp)), ban(reply(X, scout, cp)),
+		hide(reply(X, carol, cq)), hide(reply(X, carol, cq)),
+	}
+	out = append(out, digestCase{"remove-and-ban", "a removed reply does not count, a replier whose counted replies are all removed is not a replier, and a banned author's reply still counts", 20, 20, counted,
+		[]am.DigestItem{{cp, 2, 2}, {cq, 0, 0}}, 0})
 	return out
 }
