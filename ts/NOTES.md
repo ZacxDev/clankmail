@@ -60,8 +60,9 @@ The spec says "`to` is always a JSON array, even for one recipient" — this is 
 ### 5. Hub name validation
 
 Per §2, hub name is "lowercase DNS name with at least one dot, no port, no trailing dot,
-≤ 253 bytes." The implementation checks all these properties. DNS name characters
-(letters, digits, hyphens, dots) are required; other characters are rejected.
+≤ 253 bytes." The implementation checks all these properties, and each dot-separated label
+must be 1–63 bytes of `[a-z0-9-]` and must not start or end with a hyphen. *(The per-label rule
+was added after audit; as authored, only the character set was checked.)*
 
 ### 6. Depth counting
 
@@ -95,9 +96,9 @@ The implementation was verified to detect corrupted vectors:
   verification semantics, this vector would need a manual check.
 
 - `json-raw-control-char`: The spec says raw control characters in strings are an error.
-  The implementation rejects all C0 control characters (U+0000–U+001F) in string literals
-  except line feed (U+000A), which JSON also forbids as a raw character. This is standard
-  JSON behavior.
+  The implementation rejects all C0 control characters (U+0000–U+001F) in string literals.
+  *(Corrected after audit: as authored, this note said line feed was rejected while the code
+  exempted it. Line feed is now rejected too; vector `json-raw-newline`.)*
 
 - `key-identity`, `key-order-2`, `key-order-4`, `key-order-8`, `key-order-8b`,
   `key-order-8-negated`, `key-non-canonical`: These all fail at step 3 (`E_ENCODING`)
@@ -123,6 +124,17 @@ wired into `make conformance`; each is its own commit:
 - **The runner passed over an empty category.** With `invalid` emptied it printed
   `ts: 38 passed` and exited 0. It now exits 2 if `keys`, `valid`, `invalid` or `derived`
   is empty.
+
+**Audit round 1 (PR #5) found four more disagreements, each pinned by a new shared vector
+that Go and Python already passed and the TS as authored failed:**
+
+- a payload key named `__proto__` set the parsed object's prototype rather than being stored,
+  so it could supply schema fields (`schema-proto-key-supplies-nothing`) or break a valid
+  message (`msg-proto-key-ignored`); objects are now created with no prototype;
+- a high surrogate followed by a simple escape and then a low surrogate was accepted as a
+  pair (`json-lone-surrogate-split`);
+- a raw line feed inside a string was accepted (`json-raw-newline`);
+- hub names had no per-label check (`schema-hub-empty-label`, `schema-hub-label-over`).
 
 The explicit `S < L` check in `verifySignature` is defence in depth: with it removed,
 Node's own `crypto.verify` still rejects `sig-s-not-reduced` with `E_SIGNATURE`, so no vector

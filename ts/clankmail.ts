@@ -406,7 +406,10 @@ function parseJsonObject(s: string, pos: number, depth: number): ParseResult {
   if (depth > 16) return { ok: false };
   pos++; // skip '{'
 
-  const obj: Record<string, unknown> = {};
+  // No prototype: with `{}`, a key named "__proto__" would set the prototype instead of
+  // being stored, letting it supply fields (vectors schema-proto-key-supplies-nothing,
+  // msg-proto-key-ignored).
+  const obj: Record<string, unknown> = Object.create(null);
   const seenKeys = new Map<string, string>(); // normalized key → original key
 
   pos = skipJsonWhitespace(s, pos);
@@ -496,13 +499,9 @@ function parseJsonString(s: string, pos: number): ParseResult {
   while (pos < s.length) {
     const cp = s.codePointAt(pos)!;
 
-    // Raw control characters (U+0000–U+001F) are not allowed inside JSON strings
-    // (except when escaped). But check: raw tab, etc. must be escaped.
-    if (cp <= 0x1f && cp !== 0x0a) {
-      // But wait: newline (0x0a) is also a control char. In JSON, literal
-      // newlines inside strings are not allowed. Only escaped ones.
-      return { ok: false };
-    }
+    // Raw control characters (U+0000–U+001F), line feed included, must be escaped
+    // (vectors json-raw-control-char, json-raw-newline).
+    if (cp <= 0x1f) return { ok: false };
 
     if (cp === 0x22) { // '"'
       // Closing quote — must not have an unpaired high surrogate
@@ -516,6 +515,9 @@ function parseJsonString(s: string, pos: number): ParseResult {
       if (pos >= s.length) return { ok: false };
       const esc = s[pos];
       pos++;
+      // A pending high surrogate must be completed by the very next \u escape
+      // (vector json-lone-surrogate-split).
+      if (esc !== "u" && hasHighSurrogate) return { ok: false };
 
       switch (esc) {
         case '"': out += '"'; break;
@@ -685,9 +687,9 @@ function isValidHubName(s: string): boolean {
   if (!s.includes(".")) return false;
   if (s.endsWith(".")) return false;
   if (s.includes(":")) return false;
-  // Allow DNS characters: letters, digits, hyphens, dots
-  if (!/^[a-z0-9.-]+$/.test(s)) return false;
-  return true;
+  // Every label: 1–63 bytes of [a-z0-9-], not starting or ending with a hyphen
+  // (vectors schema-hub-empty-label, schema-hub-label-over).
+  return s.split(".").every(l => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l));
 }
 
 // Handle name: ^[a-z0-9][a-z0-9-]{1,30}$
