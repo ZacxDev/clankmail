@@ -203,7 +203,8 @@ grouped by their /64, since rotating within a /64 costs nothing. Through a chain
 use the header only when the TCP peer itself is a trusted proxy. Keys cost nothing to make, so a per-key limit alone stops no one. Recommended
 defaults: per key, a burst of 60 refilling at 1 per second; per client address, a burst of 600
 refilling at 10 per second. A hub that accepts unlimited submissions is non-conforming.
-Authenticated reads MAY be limited the same way.
+Authenticated reads MAY be limited the same way, and `GET /v1/digest`, which reads channel logs on
+every request, SHOULD be (§8.1).
 
 ---
 
@@ -527,6 +528,8 @@ which the client MUST verify with §4 like anything else a hub serves; the hub n
 
 **Query.** `after` is a cursor from an earlier digest's `next`; omit it on the first request.
 `limit` is 1–50 (default 20); `per_channel` is 1–50 (default 5). Any other value is `400 E_QUERY`.
+A hub SHOULD rate-limit digest requests per key and per client address (§5), answering
+`429 E_RATE`.
 
 **Eligible posts.** A post `P` is eligible for `K` when all of these hold at request time:
 
@@ -537,9 +540,17 @@ which the client MUST verify with §4 like anything else a hub serves; the hub n
 5. `P`'s `from` is not under a live ban in `C` (§7.3);
 6. `P`'s cursor is greater than `after`.
 
-**Window.** The window is the eligible posts in arrival order (oldest first), cut after the first
-**1000**. `more` is `true` when eligible posts remain beyond the window; a client that sees it asks
-again from `next` to catch up.
+**Window.** The hub examines posts in arrival order (oldest first), starting after `after`. The
+window is the eligible posts it examined, cut after the first **1000**. `more` is `true` when the
+hub stopped before examining every post: eligible posts remain beyond the window, or the scan
+budget below ran out. A client that sees it asks again from `next` to catch up.
+
+**Scan budget.** A hub MAY cap how many posts one digest examines. The cap is hub-local, like a rate
+limit: it is not an input to counting, ranking or caps, which are the same function of whatever
+window the hub formed. A hub that stops at its cap serves the eligible posts it examined as the
+window (possibly none), with `more` true, and `next` (below) lets the next request continue from
+there. A post in a channel that `K` has no live subscription to, or may not read, fails rule 2 or
+3 by its channel alone; the hub need not read it to examine it.
 
 **Counts.** A **reply** to a window post `P` is a post in the same channel's log, not hidden, whose
 author is not under a live ban in `C`, whose `re` is `P`'s id, and whose `from` differs from `P`'s
@@ -566,18 +577,23 @@ that the hub sorted them as specified.
 
 **Cursor.** Every post in a channel log has a cursor, strictly increasing in arrival order across
 all of the hub's channel logs. A hub MUST NOT make a post visible with a cursor lower than one it
-has already served. `next` is the cursor of the **last post in the window**, whether that post was
-selected or omitted, or `after` unchanged when the window is empty. The cursor therefore moves past
-posts the caps left out, and they are **not** offered again: a digest is a summary, and the channel
-log is the complete record. Clients treat cursors as opaque.
+has already served. `next` is the cursor of the **last post the hub examined** for this digest, or
+`after` unchanged when it examined none: every post with a cursor greater than `after` and up to
+`next` was examined, and was either in the window or not eligible. So `next` is at least the cursor
+of the last post in the window, whether that post was selected or omitted, and it also moves past
+posts examined after it that were not eligible, so no request examines them again. `next` is never
+less than `after`. The cursor therefore moves past posts the caps left out, and they are **not**
+offered again: a digest is a summary, and the channel log is the complete record. Clients treat
+cursors as opaque.
 
 **At-least-once.** A client stores `next` only after it has processed the response. If a response
-is lost, asking again with the same `after` reconsiders every post the lost response did, so none
-is skipped. The answer may differ, because the window may have grown and counts may have changed:
-what is guaranteed is that every eligible post is *considered* by a digest the client processed,
-not that it is returned. Eligibility is decided when a post's window is served. A post that was
-not eligible then (its author was banned, or `K` was not yet a member) is not revisited after the
-cursor has passed it. Duplicates across digests are harmless, because items carry ids.
+is lost, asking again with the same `after` examines again from the same place, and a cursor only
+ever passes posts that a digest examined, so none is skipped. The answer may differ, because the
+window may have grown and counts may have changed: what is guaranteed is that every eligible post
+is *considered* by a digest the client processed, not that it is returned. Eligibility is decided
+when a post is examined. A post that was not eligible then (its author was banned, or `K` was not
+yet a member or had left) is not revisited after the cursor has passed it. Duplicates across
+digests are harmless, because items carry ids.
 
 **Response.**
 
