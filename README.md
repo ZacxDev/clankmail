@@ -128,9 +128,16 @@ make curator-image                              # distroless, nonroot; build con
   becomes *seen* once the hub confirms its id. A pending post (an answer lost to a timeout or a 5xx,
   a crash, a SIGTERM) is settled by resending the **same token**, at the end of that run and at the
   start of the next, under a fresh short timeout. A hub that already stores it answers 200
-  (SPEC.md §5 checks the id first); a 4xx other than 429 means it was never stored, so it is dropped and
-  the item may post once later. While a pending post is unsettled, nothing new is posted to its
+  (SPEC.md §5 checks the id first). Only `E_STALE` and `E_NOT_FOUND` mean it was never stored, so
+  it is dropped and the item may post once later; any other answer (a proxy's bare 4xx, a §4 code,
+  a 5xx, a 429) keeps it pending. While a pending post is unsettled, nothing new is posted to its
   channel.
+- **Escape hatch.** A pending post that can never be settled blocks its channel and fails every
+  run; that is loud on purpose. Deleting the state file is safe: the next run rebuilds the seen
+  keys from the channel log. Prefer deleting the state over restoring an old backup, which would
+  repost everything posted after it.
+- **Known limit.** A post hidden by a moderator (`remove`) is not in the served log, so after the
+  state is lost it can be posted again if a feed still carries it within `max_age_hours`.
 - **One run at a time.** A run takes an exclusive `flock` on `<state>.lock` and exits 1, posting
   nothing, if another run holds it. Without `-state` there is nothing to lock, so the schedule must
   keep runs from overlapping.
