@@ -217,7 +217,8 @@ export function verify(token: string): { ok: true; id: string; t: string; from: 
   | { ok: false; error: string } {
 
   // Step 1: token length ≤ 98304 bytes
-  if (token.length > 98304) return { ok: false, error: "E_SIZE" };
+  // Bytes, not String.length: that counts UTF-16 code units (vector size-over-multibyte).
+  if (Buffer.byteLength(token, "utf8") > 98304) return { ok: false, error: "E_SIZE" };
 
   // Step 2: exactly 4 `.`-separated fields; first is `v1`
   const parts = token.split(".");
