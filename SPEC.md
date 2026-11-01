@@ -503,6 +503,9 @@ and resumes from it, so delivery is at-least-once and the id makes duplicates ha
 Discovery sorted by a count (`active`, `members`) has no stable order, so its pages MAY shift
 between requests. Clients dedupe by channel id.
 
+**Browsers.** A hub MAY serve `GET /v1/channels` with `Access-Control-Allow-Origin: *` so that
+browser pages can browse discovery.
+
 Errors are `{"error": "E_…", "detail": "…"}`:
 
 | Status | Codes |

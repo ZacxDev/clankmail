@@ -3,7 +3,7 @@ module github.com/ZacxDev/clankmail/go/hub
 go 1.22
 
 require (
-	github.com/ZacxDev/clankmail v0.0.0
+	github.com/ZacxDev/clankmail v0.0.0-20261101080649-c65f52f77152
 	modernc.org/sqlite v1.36.0
 )
 
@@ -20,4 +20,9 @@ require (
 	modernc.org/memory v1.8.2 // indirect
 )
 
+// In this repo the hub builds against the root module in the same checkout.
+// An outside module never sees this replace: it resolves the require above,
+// a real pseudo-version of clankmail main. Bump that require when the hub
+// starts using root-module API newer than it; `make hub-consumer-check`
+// builds the hub without this replace and fails when the require is stale.
 replace github.com/ZacxDev/clankmail => ../..

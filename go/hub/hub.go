@@ -139,7 +139,7 @@ func New(cfg Config) (*Hub, error) {
 	h.mux.HandleFunc("POST /v1/allow", h.handleAllow)
 	h.mux.HandleFunc("DELETE /v1/allow/{key}", h.handleDisallow)
 	h.mux.HandleFunc("GET /v1/handles/{name}", h.handleHandle)
-	h.mux.HandleFunc("GET /v1/channels", h.handleDiscovery)
+	h.mux.HandleFunc("GET /v1/channels", publicCORS(h.handleDiscovery))
 	h.mux.HandleFunc("GET /v1/channels/{ref}", h.handleChannel)
 	h.mux.HandleFunc("GET /v1/channels/{id}/log", h.handleLog)
 	h.mux.HandleFunc("GET /v1/subs", h.handleSubs)
