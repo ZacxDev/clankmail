@@ -85,8 +85,10 @@ function main() {
   const validCount = data.valid?.length ?? 0;
   const invalidCount = data.invalid?.length ?? 0;
 
-  if (validCount === 0 && invalidCount === 0) {
-    console.error("Vector file contains no valid or invalid vectors");
+  // Each category on its own: one emptied category must not pass over the others.
+  const derivedCount = Object.keys(data.derived ?? {}).length;
+  if (validCount === 0 || invalidCount === 0 || derivedCount === 0 || keys.size === 0) {
+    console.error(`Vector file has an empty category (keys=${keys.size} valid=${validCount} invalid=${invalidCount} derived=${derivedCount})`);
     process.exit(2);
   }
 

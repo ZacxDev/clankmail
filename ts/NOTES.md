@@ -4,13 +4,13 @@
 
 ```bash
 # Run conformance tests (required: Node 24+)
-node --experimental-strip-types ts/conformance.ts vectors/vectors.json
+node ts/conformance.ts vectors/vectors.json   # or: make conformance-ts
 
 # TypeCheck (requires tsc on PATH)
 tsc -p ts --noEmit
 ```
 
-Expected output: `ts: 144 passed` with exit 0.
+Expected output: `ts: <N> passed` (N = valid + invalid vectors) with exit 0.
 
 ## Files read while writing this
 
@@ -108,3 +108,22 @@ The implementation was verified to detect corrupted vectors:
 - `key-not-on-curve`: This passes step 3 (canonical encoding, not small order) but fails
   step 4 (`E_SIGNATURE`) because Node's crypto rejects the public key as an invalid
   curve point.
+
+## Changes made after the clean-room run (integration, not authorship)
+
+Everything above was written by the independent author. Two changes were made when it was
+wired into `make conformance`; each is its own commit:
+
+- **Step 1 counted characters, not bytes.** `token.length` is UTF-16 code units, so a
+  100 003-byte token of 2-byte characters passed step 1 and failed step 2 with `E_FORMAT`.
+  The Go and Python implementations both return `E_SIZE`. No vector caught it, because every
+  size vector was ASCII; `size-over-multibyte` now pins it, and step 1 uses
+  `Buffer.byteLength`. This is the cross-implementation disagreement the independent
+  implementation exists to find.
+- **The runner passed over an empty category.** With `invalid` emptied it printed
+  `ts: 38 passed` and exited 0. It now exits 2 if `keys`, `valid`, `invalid` or `derived`
+  is empty.
+
+The explicit `S < L` check in `verifySignature` is defence in depth: with it removed,
+Node's own `crypto.verify` still rejects `sig-s-not-reduced` with `E_SIGNATURE`, so no vector
+can distinguish the two.
