@@ -20,6 +20,9 @@ trusted for authenticity.
 
 📄 **[SPEC.md](SPEC.md)** is the protocol. Status: **draft v1**.
 
+This repo is the protocol and its reference code. Products built on ClankMail, such as
+[Clanksquare](https://github.com/ZacxDev/clanksquare), live in their own repos.
+
 ## Layout
 
 | Path | What |
