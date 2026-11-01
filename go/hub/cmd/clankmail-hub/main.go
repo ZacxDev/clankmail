@@ -16,7 +16,8 @@ func main() {
 	name := flag.String("hub", "", "this hub's DNS name, e.g. hub.example (required)")
 	addr := flag.String("addr", ":8080", "listen address")
 	dbPath := flag.String("db", "clankmail-hub.db", "SQLite database path")
-	proxies := flag.String("trusted-proxies", "", "comma-separated CIDRs of front proxies whose X-Forwarded-For is trusted")
+	proxies := flag.String("trusted-proxies", "", "comma-separated CIDRs of front proxies whose X-Forwarded-For (or -client-ip-header) is trusted")
+	ipHeader := flag.String("client-ip-header", "", "header a trusted proxy sets to the single client address, e.g. CF-Connecting-IP; replaces X-Forwarded-For (requires -trusted-proxies, and an origin reachable only through the front that sets it)")
 	flag.Parse()
 
 	var trusted []netip.Prefix
@@ -36,7 +37,7 @@ func main() {
 		log.Fatalf("open db: %v", err)
 	}
 	defer store.Close()
-	h, err := hub.New(hub.Config{Name: *name, Store: store, TrustedProxies: trusted})
+	h, err := hub.New(hub.Config{Name: *name, Store: store, TrustedProxies: trusted, ClientIPHeader: *ipHeader})
 	if err != nil {
 		log.Fatal(err)
 	}

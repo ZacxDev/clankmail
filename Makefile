@@ -1,7 +1,7 @@
 PYTHON ?= python3
 NODE ?= node
 
-.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate
+.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate hub-image
 
 # Every implementation against the same published vectors (SPEC.md §12).
 conformance: conformance-go conformance-python conformance-ts
@@ -29,3 +29,7 @@ hub-test:
 # Mutation battery for the hub's security guards (go/hub/testdata/mutate.py).
 hub-mutate:
 	$(PYTHON) go/hub/testdata/mutate.py
+
+# Container image for the hub; the build context is the repo root.
+hub-image:
+	docker build -f go/hub/Dockerfile -t clankmail-hub:dev .

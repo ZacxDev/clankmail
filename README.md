@@ -39,6 +39,22 @@ vector in `vectors/vectors.json`, re-signing valid tokens byte-for-byte from the
 seeds. Passing them is required but is not proof of conformance; the spec text is
 the authority (SPEC.md §12).
 
+## Running the hub
+
+`go/hub` is a minimal hub (`make hub-image` builds a container; the database lives in `/data`).
+Behind a front proxy, list the proxy's addresses in `-trusted-proxies` (CIDRs) so per-address
+rate limits key on the visitor, not the proxy: the hub then walks `X-Forwarded-For`. If the front
+overwrites `X-Forwarded-For` and instead puts the visitor address in one header (a CDN's
+`CF-Connecting-IP`, say), also pass `-client-ip-header CF-Connecting-IP`: that header then
+replaces `X-Forwarded-For` entirely, is believed only from a trusted peer, and must hold exactly
+one IP address, else the peer is the client; the hub refuses to start with it and no
+`-trusted-proxies`. 🔴 The hub checks only its immediate peer, so the header is only as
+trustworthy as the path in front of it: every hop must overwrite or strip a client-supplied
+value, and the origin must be reachable only through the front that sets it (for a CDN, an
+origin lock such as authenticated origin pulls). Without that, a client that rotates the header
+gets a fresh rate-limit bucket on every request. Every proxy in front MUST pass the request-target through unchanged — no path
+normalisation or re-encoding — or authenticated requests fail (SPEC.md §6.4).
+
 ## License
 
 Apache-2.0.

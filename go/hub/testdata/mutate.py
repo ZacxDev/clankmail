@@ -132,6 +132,14 @@ M = [
  ("xff: leftmost (spoofable) hop used", H, "for i := len(hops) - 1; i >= 0; i-- {", "for i := 0; i < len(hops); i++ {", "TestRateLimitClientAddress", "want 429 E_RATE, got 200"),
  ("xff: trusted hops not skipped", H, "\t\t\tif !h.trusted(ip) {\n\t\t\t\tbreak", "\t\t\tif !h.trusted(ip) || true {\n\t\t\t\tbreak", "TestRateLimitClientAddress", "want 429 E_RATE, got 200"),
  ("ipv6 not grouped by /64", H, "\tif ip.Is6() {", "\tif ip.Is6() && false {", "TestRateLimitClientAddress", "want 429 E_RATE, got 200"),
+ # --- client address header (-client-ip-header) ---
+ ("ip header: trusted-peer check off (handler)", H, "\tif !h.trusted(peer) {", "\tif !h.trusted(peer) && false {", "TestClientIPHeaderIgnoredFromUntrustedPeer", "untrusted peer, spoofed header 203.0.113.3: got 200, want 429"),
+ ("ip header: trusted-peer check off (unit)", H, "\tif !h.trusted(peer) {", "\tif !h.trusted(peer) && false {", "TestClientIPHeaderAddress", "untrusted peer, header ignored: clientAddr = \"203.0.113.7\""),
+ ("ip header: repeated header line accepted", H, "\tif len(v) != 1 {", "\tif len(v) < 1 {", "TestClientIPHeaderAddress", "header repeated: clientAddr = \"203.0.113.7\""),
+ ("ip header: zoned address accepted", H, "if err != nil || c.Zone() != \"\" {", "if err != nil || c.Zone() != \"\" && false {", "TestClientIPHeaderAddress", "header with zone: clientAddr"),
+ ("ip header: XFF still walked", H, "\tif h.cfg.ClientIPHeader != \"\" {\n\t\treturn rateKey", "\tif h.cfg.ClientIPHeader != \"\" && false {\n\t\treturn rateKey", "TestClientIPHeaderAddress", "XFF ignored when header present"),
+ ("ip header: XFF still walked (handler)", H, "\tif h.cfg.ClientIPHeader != \"\" {\n\t\treturn rateKey", "\tif h.cfg.ClientIPHeader != \"\" && false {\n\t\treturn rateKey", "TestClientIPHeaderSeparatesVisitorsBehindProxy", "visitor B #1 behind the same proxy: got 429, want 200"),
+ ("ip header: no-trusted-proxies config accepted", H, "if cfg.ClientIPHeader != \"\" && len(cfg.TrustedProxies) == 0 {", "if cfg.ClientIPHeader != \"\" && len(cfg.TrustedProxies) == 0 && false {", "TestClientIPHeaderRequiresTrustedProxies", "want refusal"),
  ("b: bad allow body E_SCHEMA", A, 'badRequest(EQuery, `body must be {"key":"k_…"}`)', 'badRequest(clankmail.ESchema, `body must be {"key":"k_…"}`)', "TestInboxCursorPaging", "want 400 E_QUERY, got 400 map[detail:body must be"),
  # --- PR #2 audit round 1 ---
  ("R1-1: live ban does not override mod/member", H, "\tif b {\n\t\treturn standing{banned: true}, nil", "\tif b && false {\n\t\treturn standing{banned: true}, nil", "TestBannedModLosesPowers", "banned mod admit: want 403 E_FORBIDDEN, got 200"),
