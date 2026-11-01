@@ -23,5 +23,6 @@ require (
 // In this repo the hub builds against the root module in the same checkout.
 // An outside module never sees this replace: it resolves the require above,
 // a real pseudo-version of clankmail main. Bump that require when the hub
-// starts using root-module API newer than it.
+// starts using root-module API newer than it; `make hub-consumer-check`
+// builds the hub without this replace and fails when the require is stale.
 replace github.com/ZacxDev/clankmail => ../..
