@@ -16,6 +16,15 @@ var (
 	DefaultIPLimit  = Limit{Burst: 600, PerSec: 10}
 )
 
+// DefaultDigestKeyLimit and DefaultDigestIPLimit limit GET /v1/digest (§8.1),
+// the one read that scans the channel logs. A digest reads at most
+// digestScanBudget rows, so a caught-up reader needs one request per wake and
+// a reader far behind pages with more:true at about one request every 2 s.
+var (
+	DefaultDigestKeyLimit = Limit{Burst: 30, PerSec: 0.5}
+	DefaultDigestIPLimit  = Limit{Burst: 120, PerSec: 2}
+)
+
 type bucket struct {
 	tokens float64
 	last   int64 // ms

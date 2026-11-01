@@ -79,9 +79,9 @@ func OpenSQLite(path string) (*SQLite, error) {
 	return &SQLite{db: db}, nil
 }
 
-// migrateLogRe adds chan_log.re to a database created before the digest
-// (§8.1) and fills it from the stored tokens. Idempotent: a NULL re means
-// "not yet read"; a post with no re gets "".
+// migrateLogRe adds chan_log.re and its index to a database created before
+// the digest (§8.1) and fills re from the stored tokens. Idempotent: a NULL
+// re means "not yet read"; a post with no re gets "".
 func migrateLogRe(db *sql.DB) error {
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('chan_log') WHERE name='re'`).Scan(&n); err != nil {
@@ -91,6 +91,11 @@ func migrateLogRe(db *sql.DB) error {
 		if _, err := db.Exec(`ALTER TABLE chan_log ADD COLUMN re TEXT`); err != nil {
 			return err
 		}
+	}
+	// Reply counting (§8.1) seeks by (channel, re). Created here, not in
+	// schema, because an old database only has re after the ALTER above.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS chan_log_re ON chan_log(channel, re)`); err != nil {
+		return err
 	}
 	rows, err := db.Query(`SELECT l.seq, ob.token FROM chan_log l JOIN objects ob ON ob.id=l.obj_id WHERE l.re IS NULL`)
 	if err != nil {
@@ -448,24 +453,6 @@ func (o sqlOps) LogHead() (int64, error) {
 	return n, err
 }
 
-func (o sqlOps) Bans(channel string) (map[string]int64, error) {
-	rows, err := o.tx.Query(`SELECT key, until FROM bans WHERE channel=?`, channel)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]int64{}
-	for rows.Next() {
-		var k string
-		var until int64
-		if err := rows.Scan(&k, &until); err != nil {
-			return nil, err
-		}
-		out[k] = until
-	}
-	return out, rows.Err()
-}
-
 func (o sqlOps) PutSub(s Sub) error {
 	return o.exec(`INSERT INTO subs(id,key,channel,start_seq,revoked) VALUES(?,?,?,?,?)`,
 		s.ID, s.Key, s.Channel, s.StartSeq, s.Revoked)
@@ -502,43 +489,80 @@ func (o sqlOps) RevokeSub(id string) error {
 	return o.exec(`UPDATE subs SET revoked=1 WHERE id=?`, id)
 }
 
-func (o sqlOps) logPosts(q string, args ...any) ([]LogPost, error) {
-	rows, err := o.tx.Query(q, args...)
+// digestScanSQL reads one channel's log forward from a cursor. It is pinned
+// to the (channel, seq) index, so it is one range seek with rows already in
+// cursor order: no sort, and no rows of other channels. It never reads a
+// token. Parameters: reader, now, channel, after, limit.
+const digestScanSQL = `SELECT l.seq, l.obj_id, l.author, COALESCE(l.re,''), ob.ts,
+	l.hidden=0 AND l.author!=? AND NOT EXISTS (
+		SELECT 1 FROM bans b WHERE b.channel=l.channel AND b.key=l.author AND ` + banLiveSQL + `)
+	FROM chan_log l INDEXED BY chan_log_channel JOIN objects ob ON ob.id=l.obj_id
+	WHERE l.channel=? AND l.seq>? ORDER BY l.seq LIMIT ?`
+
+func (o sqlOps) DigestScan(reader, channel string, after int64, limit int, now int64) ([]LogRow, error) {
+	rows, err := o.tx.Query(digestScanSQL, reader, now, channel, after, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []LogPost
+	var out []LogRow
 	for rows.Next() {
-		var p LogPost
-		if err := rows.Scan(&p.Seq, &p.Channel, &p.ID, &p.Author, &p.Re, &p.TS, &p.Token); err != nil {
+		var r LogRow
+		if err := rows.Scan(&r.Seq, &r.ID, &r.Author, &r.Re, &r.TS, &r.Eligible); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
-func (o sqlOps) DigestRows(key string, after int64, limit int) ([]LogPost, error) {
-	return o.logPosts(`SELECT l.seq, l.channel, l.obj_id, l.author, COALESCE(l.re,''), ob.ts, ob.token
-		FROM chan_log l
-		JOIN subs s ON s.channel=l.channel AND s.key=? AND s.revoked=0
-		JOIN objects ob ON ob.id=l.obj_id
-		WHERE l.hidden=0 AND l.author!=? AND l.seq>? AND l.seq>s.start_seq
-		ORDER BY l.seq LIMIT ?`, key, key, after, limit)
+// replyCountChunk bounds the parents (two parameters each) per query.
+const replyCountChunk = 400
+
+// replyCountSQL counts, in the store, the replies to n parents of one
+// channel, seeking each parent through the (channel, re) index. CROSS JOIN
+// pins the parents as the outer loop: left to choose, the planner flips the
+// join for some n (measured at 20) and walks every row of the channel
+// through the index's channel prefix instead. Parameters: n (id, author)
+// pairs, then channel, then now.
+func replyCountSQL(n int) string {
+	return `WITH p(id, author) AS (VALUES (?,?)` + strings.Repeat(",(?,?)", n-1) + `)
+	SELECT p.id, COUNT(*), COUNT(DISTINCT r.author)
+	FROM p CROSS JOIN chan_log r INDEXED BY chan_log_re ON r.channel=? AND r.re=p.id
+	WHERE r.hidden=0 AND r.author!=p.author AND NOT EXISTS (
+		SELECT 1 FROM bans b WHERE b.channel=r.channel AND b.key=r.author AND ` + banLiveSQL + `)
+	GROUP BY p.id`
 }
 
-func (o sqlOps) Replies(channel string, parents []string) ([]LogPost, error) {
-	if len(parents) == 0 {
-		return nil, nil
+func (o sqlOps) ReplyCounts(channel string, parents []ReplyParent, now int64) (map[string]ReplyCount, error) {
+	out := map[string]ReplyCount{}
+	for len(parents) > 0 {
+		chunk := parents[:min(len(parents), replyCountChunk)]
+		parents = parents[len(chunk):]
+		args := make([]any, 0, 2*len(chunk)+2)
+		for _, p := range chunk {
+			args = append(args, p.ID, p.Author)
+		}
+		args = append(args, channel, now)
+		rows, err := o.tx.Query(replyCountSQL(len(chunk)), args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			var c ReplyCount
+			if err := rows.Scan(&id, &c.Replies, &c.Repliers); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[id] = c
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
-	args := []any{channel}
-	for _, p := range parents {
-		args = append(args, p)
-	}
-	return o.logPosts(`SELECT l.seq, l.channel, l.obj_id, l.author, l.re, ob.ts, ob.token
-		FROM chan_log l JOIN objects ob ON ob.id=l.obj_id
-		WHERE l.channel=? AND l.hidden=0 AND l.re IN (?`+strings.Repeat(",?", len(parents)-1)+`)`, args...)
+	return out, nil
 }
 
 func (o sqlOps) UseAuth(id string, ts int64) (bool, error) {

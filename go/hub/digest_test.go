@@ -54,6 +54,8 @@ func wantItems(t *testing.T, what string, got []dItem, want ...dItem) {
 func unlimited(c *Config) {
 	c.KeyLimit = Limit{Burst: 1e9, PerSec: 1e9}
 	c.IPLimit = Limit{Burst: 1e9, PerSec: 1e9}
+	c.DigestKeyLimit = Limit{Burst: 1e9, PerSec: 1e9}
+	c.DigestIPLimit = Limit{Burst: 1e9, PerSec: 1e9}
 }
 
 func TestSubAcceptance(t *testing.T) {
@@ -161,10 +163,16 @@ func TestDigestEligibilityAndRanking(t *testing.T) {
 	if r.body["omitted"].(float64) != 0 || r.body["more"] != false {
 		t.Fatalf("omitted/more: %v", r.body)
 	}
+	// The scan read both logs to the end, so next is the log head: the 12
+	// channel posts above (bob's own and the ineligible ones included).
+	if r.str("next") != "12" {
+		t.Fatalf("bob's next: %v", r.body)
+	}
 
-	// Control: a key with no subscription sees nothing, and its cursor stays put.
+	// Control: a key with no subscription sees nothing; every post is
+	// decided (not eligible for it), so its cursor moves to the head too.
 	items, r = e.digest(scout, "")
-	if len(items) != 0 || r.str("next") != "0" {
+	if len(items) != 0 || r.str("next") != "12" {
 		t.Fatalf("non-subscriber digest: %v", r.body)
 	}
 }
@@ -184,17 +192,22 @@ func TestDigestMembersOnlyChannel(t *testing.T) {
 	items, _ := e.digest(bob, "")
 	wantItems(t, "member", items, dItem{p1, 0, 0})
 
-	// Leaving keeps the sub but stops the channel contributing.
+	// Leaving keeps the sub but stops the channel contributing. The cursor
+	// still moves past p1: it was not eligible when this digest was served,
+	// so it is not revisited from that cursor (§8.1 at-least-once).
 	e.mustSubmit(e.tok(bob, "leave", map[string]any{"channel": m}))
 	items, r := e.digest(bob, "")
 	wantItems(t, "after leave", items)
-	if r.str("next") != "0" {
-		t.Fatalf("an empty window must not move the cursor: %v", r.body)
+	if r.str("next") != "1" {
+		t.Fatalf("after leave, next should pass p1 (cursor 1): %v", r.body)
 	}
+	passed := r.str("next")
 	e.mustSubmit(e.tok(bob, "join", map[string]any{"channel": m}))
 	e.mustSubmit(e.tok(alice, "admit", map[string]any{"channel": m, "member": kid(bob)}))
 	items, _ = e.digest(bob, "")
 	wantItems(t, "after rejoin", items, dItem{p1, 0, 0})
+	items, _ = e.digest(bob, "after="+passed)
+	wantItems(t, "after rejoin, from the cursor that passed p1", items)
 
 	// A ban removes access: nothing from the channel, and no new sub.
 	e.mustSubmit(e.tok(alice, "ban", map[string]any{"channel": m, "member": kid(bob)}))
@@ -339,7 +352,8 @@ func TestLogReMigration(t *testing.T) {
 	e.mustSubmit(e.subTok(bob, x))
 	p := e.post(carol, x, "parent", "")
 	e.post(dave, x, "reply", p)
-	if _, err := s1.db.Exec(`ALTER TABLE chan_log DROP COLUMN re`); err != nil {
+	// The old schema: no re column, so no (channel, re) index either.
+	if _, err := s1.db.Exec(`DROP INDEX IF EXISTS chan_log_re; ALTER TABLE chan_log DROP COLUMN re`); err != nil {
 		t.Fatal(err)
 	}
 	s1.Close()
@@ -349,6 +363,10 @@ func TestLogReMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s2.Close() })
+	var idx int
+	if err := s2.db.QueryRow(`SELECT COUNT(*) FROM pragma_index_info('chan_log_re')`).Scan(&idx); err != nil || idx != 2 {
+		t.Fatalf("migration did not create chan_log_re(channel, re): %d columns, %v", idx, err)
+	}
 	e2 := newEnv(t, unlimited, func(c *Config) { c.Store = s2 })
 	e2.advance(time.Hour) // fresh auth ids: the old ones are in this database
 	items, _ := e2.digest(bob, "")

@@ -53,6 +53,10 @@ type Config struct {
 	Now      func() time.Time // injectable clock; defaults to time.Now
 	KeyLimit Limit            // per signer key on submit; zero value = DefaultKeyLimit
 	IPLimit  Limit            // per client address on submit; zero value = DefaultIPLimit
+	// DigestKeyLimit and DigestIPLimit limit GET /v1/digest per key and per
+	// client address; zero value = DefaultDigestKeyLimit / DefaultDigestIPLimit.
+	DigestKeyLimit Limit
+	DigestIPLimit  Limit
 	// TrustedProxies are the front proxies whose X-Forwarded-For (or
 	// ClientIPHeader, when set) is believed (§5). Empty: the TCP peer is the
 	// client.
@@ -89,6 +93,8 @@ type Hub struct {
 	mu        sync.Mutex // serialises submissions: check-then-apply must not interleave
 	keyRL     *limiter
 	ipRL      *limiter
+	digKeyRL  *limiter
+	digIPRL   *limiter
 }
 
 // New returns a Hub. Rate limits are always on: a zero Limit means the default.
@@ -119,7 +125,14 @@ func New(cfg Config) (*Hub, error) {
 	if cfg.IPLimit == (Limit{}) {
 		cfg.IPLimit = DefaultIPLimit
 	}
-	h := &Hub{cfg: cfg, mux: http.NewServeMux(), keyRL: newLimiter(cfg.KeyLimit), ipRL: newLimiter(cfg.IPLimit)}
+	if cfg.DigestKeyLimit == (Limit{}) {
+		cfg.DigestKeyLimit = DefaultDigestKeyLimit
+	}
+	if cfg.DigestIPLimit == (Limit{}) {
+		cfg.DigestIPLimit = DefaultDigestIPLimit
+	}
+	h := &Hub{cfg: cfg, mux: http.NewServeMux(), keyRL: newLimiter(cfg.KeyLimit), ipRL: newLimiter(cfg.IPLimit),
+		digKeyRL: newLimiter(cfg.DigestKeyLimit), digIPRL: newLimiter(cfg.DigestIPLimit)}
 	h.mux.HandleFunc("POST /v1/submit", h.handleSubmit)
 	h.mux.HandleFunc("GET /v1/objects/{id}", h.handleObject)
 	h.mux.HandleFunc("GET /v1/inbox", h.handleInbox)
@@ -741,6 +754,11 @@ func banned(ops Ops, ch *Channel, key string, now int64) (bool, error) {
 
 // banLive is the single definition of a live ban (§7.3): until 0 = forever.
 func banLive(until, now int64) bool { return until == 0 || until > now }
+
+// banLiveSQL is banLive as SQL over a bans row aliased b, taking now as its
+// one parameter. The digest (§8.1) filters in the store with it; it must say
+// exactly what banLive says (TestDigestBanExpiry pins both).
+const banLiveSQL = `(b.until=0 OR b.until>?)`
 
 // mayRead reports whether key may read ch's log (§8): anyone for read=public,
 // an unbanned member for read=members. Subscriptions and the digest use it.

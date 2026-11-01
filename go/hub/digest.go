@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -11,7 +12,8 @@ import (
 const (
 	maxLiveSubs        = 100  // §7.4 recommended cap per key
 	digestWindow       = 1000 // §8.1: eligible posts per window
-	digestScanBatch    = 500  // rows read per query while filling a window
+	digestScanBudget   = 2000 // §8.1 hub-local: most log rows one digest reads
+	digestScanBatch    = 256  // most rows read per channel query
 	digestDefaultLimit = 20
 	digestDefaultPerCh = 5
 	digestMaxParam     = 50 // limit and per_channel are 1–50
@@ -125,9 +127,20 @@ func digestQuery(r *http.Request) (after int64, limit, perCh int, err error) {
 }
 
 func (h *Hub) handleDigest(w http.ResponseWriter, r *http.Request) {
+	// A digest holds the store for up to digestScanBudget rows, so it is
+	// rate-limited (§8.1): per client address before the auth check, which
+	// itself writes, and per key after it.
+	if !h.digIPRL.allow(h.nowMS(), h.clientAddr(r)) {
+		writeErr(w, &hubErr{http.StatusTooManyRequests, ERate, "digest rate limit exceeded (client address)"})
+		return
+	}
 	key, err := h.requireAuth(r, nil)
 	if err != nil {
 		writeErr(w, err)
+		return
+	}
+	if !h.digKeyRL.allow(h.nowMS(), key) {
+		writeErr(w, &hubErr{http.StatusTooManyRequests, ERate, "digest rate limit exceeded (key)"})
 		return
 	}
 	after, limit, perCh, err := digestQuery(r)
@@ -147,16 +160,29 @@ func (h *Hub) handleDigest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// digest computes K's §8.1 digest. Eligibility rules 1, 2, 4 and 6 are in
-// DigestRows; 3 (may read) and 5 (author not banned) are applied here, and
-// counting, ranking and caps are clankmail.RankDigest.
+// digestHook, when set (tests only), receives the number of channel-log rows
+// one digest read from the store.
+var digestHook func(rowsRead int)
+
+// digestStream is one channel's log, read forward in batches.
+type digestStream struct {
+	ch   string
+	lo   int64 // cursor of the last row read
+	buf  []LogRow
+	done bool // the last read came back short: nothing more to read
+}
+
+// digest computes K's §8.1 digest. Rules 2, 3 and 6 choose which channel logs
+// are read and from where: a channel K may not read is never scanned. Rules
+// 1, 4 and 5 are LogRow.Eligible, decided in the store. Counting is
+// ReplyCounts, also in the store; ranking and caps are clankmail.RankCounted.
+// No token is read except those of the returned items.
 func digest(ops Ops, key string, after int64, limit, perCh int, now int64) (map[string]any, error) {
 	subs, err := ops.LiveSubs(key)
 	if err != nil {
 		return nil, err
 	}
-	readable := map[string]bool{}
-	bans := map[string]map[string]int64{}
+	var streams []*digestStream
 	for _, s := range subs {
 		ch, err := ops.Channel(s.Channel)
 		if err != nil {
@@ -165,71 +191,118 @@ func digest(ops Ops, key string, after int64, limit, perCh int, now int64) (map[
 		if ch == nil {
 			continue
 		}
-		if readable[ch.ID], err = mayRead(ops, ch, key, now); err != nil {
+		if ok, err := mayRead(ops, ch, key, now); err != nil {
 			return nil, err
+		} else if ok {
+			streams = append(streams, &digestStream{ch: ch.ID, lo: max(after, s.StartSeq)})
 		}
-		if bans[ch.ID], err = ops.Bans(ch.ID); err != nil {
-			return nil, err
-		}
-	}
-	isBanned := func(ch, k string) bool {
-		until, ok := bans[ch][k]
-		return ok && banLive(until, now)
 	}
 
-	// The window: the first digestWindow eligible posts after the cursor.
-	var win []LogPost
-	more := false
-	for cur := after; !more; {
-		rows, err := ops.DigestRows(key, cur, digestScanBatch)
+	// At most digestScanBudget rows are read. Each stream's first read takes
+	// an equal share of it, so every stream has a head and the merge below
+	// always makes progress.
+	read := 0
+	fill := func(st *digestStream, n int) error {
+		rows, err := ops.DigestScan(key, st.ch, st.lo, n, now)
 		if err != nil {
+			return err
+		}
+		read += len(rows)
+		st.buf, st.done = rows, len(rows) < n
+		if len(rows) > 0 {
+			st.lo = rows[len(rows)-1].Seq
+		}
+		return nil
+	}
+	share := min(digestScanBatch, max(1, digestScanBudget/max(1, len(streams))))
+	for _, st := range streams {
+		if err := fill(st, share); err != nil {
 			return nil, err
 		}
-		for _, p := range rows {
-			cur = p.Seq
-			if !readable[p.Channel] || isBanned(p.Channel, p.Author) {
-				continue
+	}
+
+	// Merge the streams in cursor order into the window. next is the cursor
+	// up to which every post is decided: in the window, or not eligible
+	// (§8.1), so the next digest never reads those rows again.
+	type winPost struct {
+		LogRow
+		ch string
+	}
+	var win []winPost
+	next, more := after, false
+scan:
+	for {
+		var top *digestStream
+		for _, st := range streams {
+			if len(st.buf) == 0 && !st.done {
+				n := min(digestScanBatch, digestScanBudget-read)
+				if n == 0 {
+					more = true // budget spent with rows left to read
+					break scan
+				}
+				if err := fill(st, n); err != nil {
+					return nil, err
+				}
 			}
+			if len(st.buf) > 0 && (top == nil || st.buf[0].Seq < top.buf[0].Seq) {
+				top = st
+			}
+		}
+		if top == nil {
+			// Every readable log is read to its end; every other post is not
+			// eligible. So everything up to the log head is decided.
+			head, err := ops.LogHead()
+			if err != nil {
+				return nil, err
+			}
+			next = max(next, head)
+			break
+		}
+		row := top.buf[0]
+		if row.Eligible {
 			if len(win) == digestWindow {
 				more = true
 				break
 			}
-			win = append(win, p)
+			win = append(win, winPost{row, top.ch})
 		}
-		if len(rows) < digestScanBatch {
-			break
-		}
+		top.buf = top.buf[1:]
+		next = row.Seq
+	}
+	if digestHook != nil {
+		digestHook(read)
 	}
 
-	posts := make([]clankmail.DigestPost, 0, len(win))
-	tokens := map[string]string{}
-	byChannel := map[string][]string{}
+	parents := map[string][]ReplyParent{}
 	for _, p := range win {
-		posts = append(posts, clankmail.DigestPost{ID: p.ID, Channel: p.Channel, From: p.Author, TS: p.TS, Re: p.Re, Window: true})
-		tokens[p.ID] = p.Token
-		byChannel[p.Channel] = append(byChannel[p.Channel], p.ID)
+		parents[p.ch] = append(parents[p.ch], ReplyParent{p.ID, p.Author})
 	}
-	for ch, ids := range byChannel {
-		rs, err := ops.Replies(ch, ids)
+	counts := map[string]ReplyCount{}
+	for ch, ps := range parents {
+		cs, err := ops.ReplyCounts(ch, ps, now)
 		if err != nil {
 			return nil, err
 		}
-		for _, p := range rs {
-			// A window post that is also a reply is already in posts.
-			if _, inWin := tokens[p.ID]; inWin || isBanned(p.Channel, p.Author) {
-				continue
-			}
-			posts = append(posts, clankmail.DigestPost{ID: p.ID, Channel: p.Channel, From: p.Author, TS: p.TS, Re: p.Re})
+		for id, c := range cs {
+			counts[id] = c
 		}
 	}
-	ranked, omitted := clankmail.RankDigest(posts, limit, perCh)
-	items := make([]digestItem, len(ranked))
-	for i, it := range ranked {
-		items[i] = digestItem{tokens[it.ID], digestUnsigned{it.Repliers, it.Replies}}
+	cands := make([]clankmail.DigestCandidate, len(win))
+	for i, p := range win {
+		c := counts[p.ID]
+		cands[i] = clankmail.DigestCandidate{ID: p.ID, Channel: p.ch, TS: p.TS, Repliers: c.Repliers, Replies: c.Replies}
 	}
-	next := after
-	if len(win) > 0 {
-		next = win[len(win)-1].Seq
+	ranked, omitted := clankmail.RankCounted(cands, limit, perCh)
+	items := make([]digestItem, 0, len(ranked))
+	for _, it := range ranked {
+		ob, err := ops.Object(it.ID)
+		if err != nil {
+			return nil, err
+		}
+		if ob == nil {
+			return nil, fmt.Errorf("digest: log row %s has no stored object", it.ID)
+		}
+		items = append(items, digestItem{ob.Token, digestUnsigned{it.Repliers, it.Replies}})
 	}
 	return map[string]any{"items": items, "omitted": omitted, "more": more, "next": strconv.FormatInt(next, 10)}, nil
 }

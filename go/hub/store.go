@@ -77,15 +77,27 @@ type Sub struct {
 	Revoked  bool
 }
 
-// LogPost is a channel-log row with the fields the digest needs (§8.1).
-type LogPost struct {
-	Seq     int64
-	Channel string
-	ID      string
-	Author  string
-	Re      string
-	TS      int64
-	Token   string
+// LogRow is a channel-log row as the digest scan reads it (§8.1): never the
+// token, which the digest fetches only for the posts it returns.
+type LogRow struct {
+	Seq      int64
+	ID       string
+	Author   string
+	Re       string
+	TS       int64
+	Eligible bool // not hidden, not by the reader, author not under a live ban
+}
+
+// ReplyParent is a window post whose replies ReplyCounts counts.
+type ReplyParent struct {
+	ID     string
+	Author string
+}
+
+// ReplyCount is a window post's §8.1 counts.
+type ReplyCount struct {
+	Repliers int
+	Replies  int
 }
 
 // Entry is one item of a cursor-paged stream (inbox or channel log).
@@ -148,17 +160,19 @@ type Ops interface {
 	PostsSince(channel string, since int64) (int, error)
 	LogHead() (int64, error) // greatest channel-log cursor, 0 when empty
 
-	Bans(channel string) (map[string]int64, error) // key -> until, every stored ban
-
 	PutSub(s Sub) error
 	LiveSub(key, channel string) (*Sub, error)
 	LiveSubs(key string) ([]Sub, error) // arrival order
 	RevokeSub(id string) error
-	// DigestRows returns unhidden posts, in cursor order, after cursor `after`
-	// from channels key has a live sub to, newer than that sub and not by key.
-	DigestRows(key string, after int64, limit int) ([]LogPost, error)
-	// Replies returns unhidden posts of channel whose re is one of parents.
-	Replies(channel string, parents []string) ([]LogPost, error)
+	// DigestScan returns up to limit rows of channel's log with a cursor
+	// greater than after, in cursor order, hidden ones included; Eligible
+	// applies §8.1 rules 1, 4 and 5 for reader at hub time now.
+	DigestScan(reader, channel string, after int64, limit int, now int64) ([]LogRow, error)
+	// ReplyCounts returns, per parent with at least one reply, the §8.1
+	// counts of channel's replies to it (not hidden, not by the parent's
+	// author, author not under a live ban at now). It reads no reply rows
+	// into memory.
+	ReplyCounts(channel string, parents []ReplyParent, now int64) (map[string]ReplyCount, error)
 
 	// UseAuth records an auth id. It reports false if the id was already used.
 	UseAuth(id string, ts int64) (bool, error)

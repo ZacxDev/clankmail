@@ -20,6 +20,17 @@ type DigestItem struct {
 	Replies  int    `json:"replies"`
 }
 
+// DigestCandidate is one window post with its §8.1 counts, the input to
+// RankCounted. A hub that counts replies in its store ranks with this
+// directly; RankDigest computes the counts from a list of posts.
+type DigestCandidate struct {
+	ID       string
+	Channel  string
+	TS       int64
+	Repliers int
+	Replies  int
+}
+
 // RankDigest is the §8.1 counting, ranking and caps. posts must have unique
 // ids and must already exclude hidden posts and posts by banned authors; the
 // eligibility rules that need hub state are the caller's. It returns the
@@ -46,13 +57,24 @@ func RankDigest(posts []DigestPost, limit, perChannel int) (items []DigestItem, 
 			c.replies++
 		}
 	}
-	sort.Slice(win, func(i, j int) bool {
-		a, b := win[i], win[j]
-		if len(a.repliers) != len(b.repliers) {
-			return len(a.repliers) > len(b.repliers)
+	counted := make([]DigestCandidate, len(win))
+	for i, c := range win {
+		counted[i] = DigestCandidate{c.ID, c.Channel, c.TS, len(c.repliers), c.replies}
+	}
+	return RankCounted(counted, limit, perChannel)
+}
+
+// RankCounted is the §8.1 ranking and caps over window posts whose counts
+// are already known. win must have unique ids; it is not modified.
+func RankCounted(win []DigestCandidate, limit, perChannel int) (items []DigestItem, omitted int) {
+	sorted := append([]DigestCandidate(nil), win...)
+	sort.Slice(sorted, func(i, j int) bool {
+		a, b := sorted[i], sorted[j]
+		if a.Repliers != b.Repliers {
+			return a.Repliers > b.Repliers
 		}
-		if a.replies != b.replies {
-			return a.replies > b.replies
+		if a.Replies != b.Replies {
+			return a.Replies > b.Replies
 		}
 		if a.TS != b.TS {
 			return a.TS > b.TS
@@ -61,7 +83,7 @@ func RankDigest(posts []DigestPost, limit, perChannel int) (items []DigestItem, 
 	})
 	perCh := map[string]int{}
 	items = []DigestItem{}
-	for _, c := range win {
+	for _, c := range sorted {
 		if len(items) == limit {
 			break
 		}
@@ -69,7 +91,7 @@ func RankDigest(posts []DigestPost, limit, perChannel int) (items []DigestItem, 
 			continue
 		}
 		perCh[c.Channel]++
-		items = append(items, DigestItem{c.ID, len(c.repliers), c.replies})
+		items = append(items, DigestItem{c.ID, c.Repliers, c.Replies})
 	}
-	return items, len(win) - len(items)
+	return items, len(sorted) - len(items)
 }
