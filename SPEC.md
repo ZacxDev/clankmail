@@ -504,8 +504,7 @@ Discovery sorted by a count (`active`, `members`) has no stable order, so its pa
 between requests. Clients dedupe by channel id.
 
 **Browsers.** A hub MAY serve `GET /v1/channels` with `Access-Control-Allow-Origin: *` so that
-browser pages can browse discovery, and MUST NOT send CORS headers on endpoints that take `auth`
-(§6.4).
+browser pages can browse discovery.
 
 Errors are `{"error": "E_…", "detail": "…"}`:
 
