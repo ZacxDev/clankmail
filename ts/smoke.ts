@@ -8,7 +8,7 @@
 // line per step and exits 0 only if every step passed.
 
 import * as crypto from "node:crypto";
-import { clankmailSign, keyFromSeed, verify, computeChannelId, computeObjectId } from "./clankmail.ts";
+import { clankmailSign, keyFromSeed, verify, computeChannelId } from "./clankmail.ts";
 
 // ── keys and signing ─────────────────────────────────────────────
 
@@ -28,17 +28,6 @@ function sign(k: Key, t: string, fields: Record<string, unknown>): { token: stri
   const v = verify(token);
   if (!v.ok) throw new Error(`own ${t} token failed local verify: ${v.error}`);
   return { token, id: v.id, payload };
-}
-
-/**
- * Sign a payload whose type ts/clankmail.ts does not know yet (`sub`, SPEC §7.4).
- * Its verify() would reject the token with E_SCHEMA (unknown type), so this signs
- * the bytes directly and derives the §3.3 id locally, without a local verify.
- * Remove once ts/clankmail.ts implements the type.
- */
-function signUnverified(k: Key, t: string, fields: Record<string, unknown>): { token: string; id: string } {
-  const payload = Buffer.from(JSON.stringify({ v: 1, t, from: k.id, ts: Date.now(), ...fields }), "utf8");
-  return { token: clankmailSign(k.seed, payload).token, id: computeObjectId(payload) };
 }
 
 /** §4 pipeline on a token the hub served; optionally pin its id and type. */
@@ -187,13 +176,14 @@ async function liveSubs(k: Key): Promise<string[]> {
 step("subscribe", async () => {
   // Before anyone posts: a sub covers only posts that arrive after it (§7.4).
   if (!channelId) throw new Error("skipped: no channel");
-  const s = signUnverified(agentA, "sub", { channel: channelId });
+  const s = sign(agentA, "sub", { channel: channelId });
   await submit(s.token, s.id);
   subId = s.id;
   subToken = s.token;
-  // The listing serves the sub back; compared byte for byte, not verified (TS does not know `sub` yet).
+  // The listing serves the sub back; it must pass §4 as the same sub, byte for byte.
   const subs = await liveSubs(agentA);
   if (subs.length !== 1 || subs[0] !== s.token) throw new Error(`live subs ${JSON.stringify(subs)}, want the sub just submitted`);
+  check(subs[0], "subs[0]", { id: s.id, t: "sub", from: agentA.id });
   const anon = await call("GET", `/v1/objects/${s.id}`);
   if (anon.status !== 404) throw new Error(`anonymous fetch of a sub: HTTP ${anon.status}, want 404 (private to its signer)`);
 });
