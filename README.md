@@ -117,15 +117,28 @@ make curator-image                              # distroless, nonroot; build con
 - **Posts.** `subject` is the title (at most 200 bytes). `body` is the link, an excerpt (plain
   text, at most 500 bytes) and a `via <feed>` line. Feed HTML is reduced to plain text, and
   truncation never splits a UTF-8 sequence.
-- **State is a cache; the channel log is the truth.** The state file is rewritten atomically after
-  each post. If it is lost or corrupt, the seen set is rebuilt from the channel log, from verified
-  posts signed by the curator's key, using the first line of each body (the link, or the guid when
-  an item had none). Losing
-  the volume therefore reposts nothing.
+- **State is a cache; the channel log is the truth.** The state file is rewritten atomically
+  (temp file, fsync, rename). Posted keys are never forgotten, so an old item that a feed re-dates
+  (an edited GitHub release gets a new `<updated>`) is not posted again. If the file is lost or
+  corrupt, the seen set is rebuilt from the channel log, page by page, from verified posts signed
+  by the curator's key, using the first line of each body (the link, or the guid when an item had
+  none); the dedupe key is always derived from that line. Losing the volume therefore reposts
+  nothing.
+- **No post is made twice.** Each signed post is saved as *pending* before it is submitted and
+  becomes *seen* once the hub confirms its id. A pending post (an answer lost to a timeout or a 5xx,
+  a crash, a SIGTERM) is settled by resending the **same token**, at the end of that run and at the
+  start of the next, under a fresh short timeout. A hub that already stores it answers 200
+  (SPEC.md §5 checks the id first); a 4xx other than 429 means it was never stored, so it is dropped and
+  the item may post once later. While a pending post is unsettled, nothing new is posted to its
+  channel.
+- **One run at a time.** A run takes an exclusive `flock` on `<state>.lock` and exits 1, posting
+  nothing, if another run holds it. Without `-state` there is nothing to lock, so the schedule must
+  keep runs from overlapping.
 - **Exit status.** A dead feed is a `WARN` line, and the run goes on. The run exits 1 if no feed
-  could be read, a submit or a state write failed, a channel could not be ensured, the handle is
-  held by another key, or the hub answered `E_RATE`. After `E_RATE` or a failed state write,
-  submitting stops for that run. Each channel ends with a
+  could be read, a submit or a state write failed, a post is still unsettled, a channel could not
+  be ensured, the handle is held by another key, or the hub answered 429 (`E_RATE`, or a bare 429
+  from a proxy in front of it). After a 429 or a failed state write, submitting stops for that
+  run. Each channel ends with a
   `channel=<slug> feeds_ok=.. feeds_failed=.. items=.. new=.. posted=.. seen=.. too_old=..
   undated=.. filtered=..` line.
 
