@@ -1,15 +1,20 @@
 PYTHON ?= python3
+NODE ?= node
 
-.PHONY: conformance conformance-go conformance-python vectors hub-test hub-mutate
+.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate
 
-# Both implementations against the same published vectors (SPEC.md §12).
-conformance: conformance-go conformance-python
+# Every implementation against the same published vectors (SPEC.md §12).
+conformance: conformance-go conformance-python conformance-ts
 
 conformance-go:
 	go test -count=1 ./go/...
 
 conformance-python:
 	cd python && $(PYTHON) conformance.py ../vectors/vectors.json
+
+# Written from SPEC.md + vectors only (ts/NOTES.md). Node >= 23.6 runs .ts directly.
+conformance-ts:
+	$(NODE) ts/conformance.ts vectors/vectors.json
 
 # Regenerate vectors from fixed seeds. Output must be byte-identical to the
 # committed file unless the spec changed.

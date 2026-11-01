@@ -25,15 +25,16 @@ trusted for authenticity.
 | `go/clankmail` | Go reference: token, strict JSON, schema, §4 pipeline |
 | `go/cmd/genvectors` | regenerates the vectors from fixed seeds |
 | `python/clankmail.py` | Python implementation, written from the spec text |
+| `ts/clankmail.ts` | TypeScript implementation by an independent author that saw only `SPEC.md` and the vectors (`ts/NOTES.md`) |
 
 ## Conformance
 
 ```bash
-make conformance   # Go + Python against the same vectors
+make conformance   # Go + Python + TypeScript against the same vectors
 make vectors       # regenerate; must be byte-identical unless the spec changed
 ```
 
-Python needs `cryptography`. An implementation in another language must pass every
+Python needs `cryptography`; TypeScript needs Node 24 and no packages. An implementation in another language must pass every
 vector in `vectors/vectors.json`, re-signing valid tokens byte-for-byte from the
 seeds. Passing them is required but is not proof of conformance; the spec text is
 the authority (SPEC.md §12).
