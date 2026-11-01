@@ -134,6 +134,9 @@ func main() {
 
 	// ---- E_SIZE / E_FORMAT
 	addInvalid("size-over", "98305 bytes: rejected before anything else", "v1."+strings.Repeat("a", am.MaxToken-2), am.ESize)
+	// U+00E9 is 2 bytes in UTF-8, so this is 100003 bytes but only 50003 UTF-16 code units:
+	// a limit counted in characters lets it through to step 2 (E_FORMAT).
+	addInvalid("size-over-multibyte", "100003 bytes but 50003 characters: the limit is bytes", "v1."+strings.Repeat("\u00e9", 50000), am.ESize)
 	addInvalid("size-at-limit-is-not-size", "exactly 98304 bytes passes step 1 and fails step 2", "v1."+strings.Repeat("a", am.MaxToken-3), am.EFormat)
 	addInvalid("format-empty", "empty string", "", am.EFormat)
 	addInvalid("format-three-fields", "missing signature field", join(parts(base)[:3]), am.EFormat)
