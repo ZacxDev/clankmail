@@ -52,9 +52,18 @@ type Config struct {
 	Now      func() time.Time // injectable clock; defaults to time.Now
 	KeyLimit Limit            // per signer key on submit; zero value = DefaultKeyLimit
 	IPLimit  Limit            // per client address on submit; zero value = DefaultIPLimit
-	// TrustedProxies are the front proxies whose X-Forwarded-For is
-	// believed (§5). Empty: the TCP peer is the client.
+	// TrustedProxies are the front proxies whose X-Forwarded-For (or
+	// ClientIPHeader, when set) is believed (§5). Empty: the TCP peer is the
+	// client.
 	TrustedProxies []netip.Prefix
+	// ClientIPHeader, when set, names a header (e.g. CF-Connecting-IP) that
+	// a trusted proxy fills with the single client address, for fronts that
+	// overwrite X-Forwarded-For. It then REPLACES X-Forwarded-For as the
+	// only source of the client address: XFF is not consulted at all. The
+	// header is believed only from a peer inside TrustedProxies, and only
+	// when it holds exactly one IP address; otherwise the peer is the
+	// client. Requires a non-empty TrustedProxies.
+	ClientIPHeader string
 }
 
 // Hub is an http.Handler serving the §8 API.
@@ -81,6 +90,11 @@ func New(cfg Config) (*Hub, error) {
 	}
 	if err := checkHubName(cfg.Name); err != nil {
 		return nil, err
+	}
+	if cfg.ClientIPHeader != "" && len(cfg.TrustedProxies) == 0 {
+		// The header would be ignored from every peer: a setting that
+		// silently does nothing.
+		return nil, errors.New("hub: ClientIPHeader requires TrustedProxies")
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -173,8 +187,9 @@ func absDiff(a, b int64) int64 {
 // clientAddr is the rate-limit key for a request's client (§5). The TCP peer
 // is the client unless it is a trusted proxy; then X-Forwarded-For is walked
 // right to left, skipping trusted proxies, and the first untrusted hop is
-// the client (entries further left are client-supplied and spoofable). IPv6
-// addresses are grouped by /64, since rotating within one costs nothing.
+// the client (entries further left are client-supplied and spoofable). With
+// ClientIPHeader set, that header replaces X-Forwarded-For (headerClient).
+// IPv6 addresses are grouped by /64, since rotating within one costs nothing.
 func (h *Hub) clientAddr(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -185,6 +200,9 @@ func (h *Hub) clientAddr(r *http.Request) string {
 		return host
 	}
 	ip = ip.Unmap()
+	if h.cfg.ClientIPHeader != "" {
+		return rateKey(h.headerClient(r, ip))
+	}
 	if h.trusted(ip) {
 		hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 		for i := len(hops) - 1; i >= 0; i-- {
@@ -198,6 +216,32 @@ func (h *Hub) clientAddr(r *http.Request) string {
 			}
 		}
 	}
+	return rateKey(ip)
+}
+
+// headerClient is the client address under ClientIPHeader. Fail-closed: the
+// header counts only from a trusted peer and only when it is exactly one IP
+// address (one header line, no list, no zone); anything else — absent,
+// empty, a list, garbage — leaves the peer as the client. Falling back to the
+// peer, never to X-Forwarded-For or the raw string, means a malformed header
+// cannot mint a fresh rate-limit bucket per request.
+func (h *Hub) headerClient(r *http.Request, peer netip.Addr) netip.Addr {
+	if !h.trusted(peer) {
+		return peer
+	}
+	v := r.Header.Values(h.cfg.ClientIPHeader)
+	if len(v) != 1 {
+		return peer
+	}
+	c, err := netip.ParseAddr(strings.TrimSpace(v[0]))
+	if err != nil || c.Zone() != "" {
+		return peer
+	}
+	return c.Unmap()
+}
+
+// rateKey is the per-address rate-limit key for ip: IPv6 grouped by /64.
+func rateKey(ip netip.Addr) string {
 	if ip.Is6() {
 		p, _ := ip.Prefix(64)
 		return p.String()
