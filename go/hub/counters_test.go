@@ -1,13 +1,15 @@
 package hub
 
 // The stored reply counters (§8.1): maintained on append and remove, equal to
-// a recount from the log for any history, back-filled for an existing
-// database, and read by the digest without reading any reply.
+// a recount from the log for any history, recounted on every open (so an
+// existing database, or one an older binary wrote to, is repaired), and read
+// by the digest without reading any reply.
 
 import (
 	"context"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"math/rand"
 	"os"
@@ -358,9 +360,10 @@ func openOld(t *testing.T, path string) []mPost {
 }
 
 // Opening a database written by the 1f13b26 schema adds the counters and
-// back-fills them to the recount. Opening it again is a no-op; with the
-// marker cleared it recomputes the same values from scratch, whatever was
-// stored. After the migration, appends and removes keep the counters right.
+// fills them by the recount. Every later open recounts again: it gets the
+// same values from a correct store and replaces whatever a corrupted one
+// held, ignoring the earlier build's one-time marker. After the migration,
+// appends and removes keep the counters right.
 func TestReplyCountBackfill(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	log := openOld(t, path)
@@ -393,18 +396,15 @@ func TestReplyCountBackfill(t *testing.T) {
 	}
 	s.Close()
 
-	s = open() // second open: the marker skips the back-fill
+	s = open() // second open: recounts, and gets the same values
 	if d := diffCounts(want, storedCounts(t, s.db)); d != "" {
 		t.Fatalf("second open:\n%s", d)
 	}
-	// Positive control for the comparison: wrong counters, marker kept, are
-	// left alone by the next open, and the diff sees them.
-	if _, err := s.db.Exec(`UPDATE chan_log SET replies=replies+7, repliers=repliers+7; UPDATE reply_authors SET n=n+1`); err != nil {
-		t.Fatal(err)
-	}
-	s.Close()
-	s = open()
-	if _, err := s.db.Exec(`UPDATE reply_authors SET n=n-1`); err != nil {
+	// Corrupt what is stored, and plant the marker an earlier build used to
+	// skip the recount. Positive control: the comparison sees the damage.
+	if _, err := s.db.Exec(`UPDATE chan_log SET replies=replies+7, repliers=repliers+7; UPDATE reply_authors SET n=n+1;
+		INSERT INTO reply_authors(post,author,n) VALUES('m_old0000','k_zz',3);
+		INSERT OR REPLACE INTO meta(k,v) VALUES('reply_counts','1')`); err != nil {
 		t.Fatal(err)
 	}
 	if d := diffCounts(want, func() map[string]counts {
@@ -421,14 +421,16 @@ func TestReplyCountBackfill(t *testing.T) {
 	}()); d == "" {
 		t.Fatal("control: corrupted counters compare equal")
 	}
-	// Marker cleared: the back-fill runs again and replaces what is stored.
-	if _, err := s.db.Exec(`DELETE FROM meta WHERE k='reply_counts'; INSERT INTO reply_authors(post,author,n) VALUES('m_old0000','k_zz',3)`); err != nil {
-		t.Fatal(err)
-	}
 	s.Close()
+	// The next open recounts from scratch whatever was stored, marker or not,
+	// and removes the marker.
 	s = open()
 	if d := diffCounts(want, storedCounts(t, s.db)); d != "" {
-		t.Fatalf("re-run back-fill:\n%s", d)
+		t.Fatalf("reopen after corruption:\n%s", d)
+	}
+	var marker int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM meta WHERE k='reply_counts'`).Scan(&marker); err != nil || marker != 0 {
+		t.Fatalf("old back-fill marker still stored: %d, %v", marker, err)
 	}
 	// And twice in a row in one transaction.
 	tx, err := s.db.Begin()
@@ -711,5 +713,213 @@ func TestSubmitPathPlans(t *testing.T) {
 	}
 	if c := storedCounts(t, s.db)[posts[0]]; c != (counts{1999, 37}) {
 		t.Fatalf("parent after one reply added and removed and one old reply removed: %v", c)
+	}
+}
+
+// inTx runs f against s in one committed transaction.
+func inTx(t *testing.T, s *SQLite, f func(sqlOps) error) {
+	t.Helper()
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f(sqlOps{tx}); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// olderBinaryOpen opens path the way a hub binary from before the stored
+// counters did: plain SQL, no migrations, nothing maintained.
+func olderBinaryOpen(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+// oldPut stores a channel post's object with a token whose payload names re,
+// as the hub stores a real one (storedFields reads re from it).
+func oldPut(t *testing.T, db interface {
+	Exec(string, ...any) (sql.Result, error)
+}, p mPost) {
+	t.Helper()
+	pl := `{}`
+	if p.re != "" {
+		pl = `{"re":"` + p.re + `"}`
+	}
+	tok := "v1.h." + base64.RawURLEncoding.EncodeToString([]byte(pl)) + ".s"
+	if _, err := db.Exec(`INSERT INTO objects(id,type,from_key,ts,channel,token,recv) VALUES(?,'msg',?,0,?,?,0)`,
+		p.id, p.from, p.ch, tok); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A rollback: the current binary counts, an older binary writes to the same
+// database without maintaining the counters, and the current binary opens it
+// again. The older writes are those binaries' exact statements: 1f13b26's
+// AppendLog (re given), main's AppendLog (no re column, so re is NULL until
+// migrateLogRe fills it from the token), and their HideLog (hidden=1 only).
+// On reopen the counters equal the recount; removing every reply then leaves
+// zeros, and no reply_authors row with n <= 0.
+func TestCountersRecountedAfterOlderBinary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollback.db")
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ch = "c_roll"
+	P := mPost{id: "m_P", ch: ch, from: "k_a"}
+	log := []mPost{P,
+		{id: "m_r1", ch: ch, from: "k_b", re: P.id},
+		{id: "m_r1b", ch: ch, from: "k_e", re: P.id}}
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range log {
+		oldPut(t, tx, p)
+		if err := (sqlOps{tx}).AppendLog(p.ch, p.id, p.re, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if c := storedCounts(t, s.db)[P.id]; c != (counts{2, 2}) {
+		t.Fatalf("before rollback: %v, want [2 2]", c)
+	}
+	s.Close()
+
+	old := olderBinaryOpen(t, path)
+	r2 := mPost{id: "m_r2", ch: ch, from: "k_c", re: P.id}
+	oldPut(t, old, r2)
+	if _, err := old.Exec(`INSERT INTO chan_log(channel,obj_id,author,recv,re)
+		SELECT ?, id, from_key, ?, ? FROM objects WHERE id=?`, ch, 0, r2.re, r2.id); err != nil { // 1f13b26
+		t.Fatal(err)
+	}
+	r3 := mPost{id: "m_r3", ch: ch, from: "k_d", re: P.id}
+	oldPut(t, old, r3)
+	if _, err := old.Exec(`INSERT INTO chan_log(channel,obj_id,author,recv)
+		SELECT ?, id, from_key, ? FROM objects WHERE id=?`, ch, 0, r3.id); err != nil { // main: re NULL
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`UPDATE chan_log SET hidden=1 WHERE channel=? AND obj_id=?`, ch, "m_r1b"); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	log = append(log, r2, r3)
+	log[2].hidden = true
+
+	s, err = OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// r1, r2, r3 count (three keys); r1b is hidden. r2 is the 1f13b26 write,
+	// r3 the main write that only migrateLogRe gives a re.
+	var who []string
+	rs, err := s.db.Query(`SELECT author FROM reply_authors WHERE post=? ORDER BY author`, P.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rs.Next() {
+		var a string
+		rs.Scan(&a)
+		who = append(who, a)
+	}
+	rs.Close()
+	if strings.Join(who, " ") != "k_b k_c k_d" {
+		t.Fatalf("after reopen: P's counted repliers %v, want [k_b k_c k_d]", who)
+	}
+	if c := storedCounts(t, s.db)[P.id]; c != (counts{3, 3}) {
+		t.Fatalf("after reopen: P stored %v, want [3 3] (recount after the older binary's writes)", c)
+	}
+	if d := diffCounts(recount(log), storedCounts(t, s.db)); d != "" {
+		t.Fatalf("after reopen:\n%s", d)
+	}
+
+	tx, err = s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"m_r1", "m_r2", "m_r3", "m_r1b"} {
+		if err := (sqlOps{tx}).HideLog(ch, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if c := storedCounts(t, s.db)[P.id]; c != (counts{0, 0}) {
+		t.Fatalf("after removing every reply: P stored %v, want [0 0]", c)
+	}
+}
+
+// Removing a reply that was never counted (written by something that did not
+// maintain the counters, here straight into the open store) changes nothing:
+// no counter goes below zero and no reply_authors row with n <= 0 appears,
+// so that key's next reply still counts it as a replier.
+func TestCountReplyDecrementFloor(t *testing.T) {
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "floor.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const ch = "c_floor"
+	P := mPost{id: "m_P", ch: ch, from: "k_a"}
+	oldPut(t, s.db, P)
+	inTx(t, s, func(o sqlOps) error { return o.AppendLog(ch, P.id, "", 0) })
+	u := mPost{id: "m_uncounted", ch: ch, from: "k_f", re: P.id}
+	oldPut(t, s.db, u)
+	if _, err := s.db.Exec(`INSERT INTO chan_log(channel,obj_id,author,recv,re)
+		SELECT ?, id, from_key, 0, ? FROM objects WHERE id=?`, ch, u.re, u.id); err != nil {
+		t.Fatal(err)
+	}
+	inTx(t, s, func(o sqlOps) error { return o.HideLog(ch, u.id) })
+	var rows int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM reply_authors WHERE post=?`, P.id).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("removing an uncounted reply: %d reply_authors rows for P, %v (want 0)", rows, err)
+	}
+	if c := storedCounts(t, s.db)[P.id]; c != (counts{0, 0}) {
+		t.Fatalf("removing an uncounted reply: P stored %v, want [0 0]", c)
+	}
+	again := mPost{id: "m_again", ch: ch, from: "k_f", re: P.id}
+	oldPut(t, s.db, again)
+	inTx(t, s, func(o sqlOps) error { return o.AppendLog(ch, again.id, again.re, 0) })
+	if c := storedCounts(t, s.db)[P.id]; c != (counts{1, 1}) {
+		t.Fatalf("a later counted reply by the same key: P stored %v, want [1 1]", c)
+	}
+}
+
+// Removing a reply that is already removed takes nothing away again, also
+// when its author has another counted reply to the same post (the case the
+// decrement floor alone would not catch).
+func TestReRemoveDecrementsOnce(t *testing.T) {
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "reremove.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const ch = "c_rr"
+	P := mPost{id: "m_P", ch: ch, from: "k_a"}
+	r1 := mPost{id: "m_r1", ch: ch, from: "k_g", re: P.id}
+	r2 := mPost{id: "m_r2", ch: ch, from: "k_g", re: P.id}
+	for _, p := range []mPost{P, r1, r2} {
+		oldPut(t, s.db, p)
+		inTx(t, s, func(o sqlOps) error { return o.AppendLog(ch, p.id, p.re, 0) })
+	}
+	if c := storedCounts(t, s.db)[P.id]; c != (counts{2, 1}) {
+		t.Fatalf("two replies by one key: P stored %v, want [2 1]", c)
+	}
+	inTx(t, s, func(o sqlOps) error { return o.HideLog(ch, r1.id) })
+	inTx(t, s, func(o sqlOps) error { return o.HideLog(ch, r1.id) })
+	if c := storedCounts(t, s.db)[P.id]; c != (counts{1, 1}) {
+		t.Fatalf("re-removing a reply: P stored %v, want [1 1]", c)
 	}
 }

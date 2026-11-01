@@ -89,10 +89,16 @@ func OpenSQLite(path string) (*SQLite, error) {
 }
 
 // migrateReplyCounts gives a database created before the stored reply
-// counters (§8.1) its replies/repliers columns, the (channel, obj_id) index
-// that maintaining them seeks by, and counters back-filled from the log.
-// Idempotent: the columns and index are added only when missing, and the
-// back-fill runs once, in one transaction with the marker that records it.
+// counters (§8.1) its replies/repliers columns and the (channel, obj_id)
+// index that maintaining them seeks by, and then recounts every post's
+// counters from the log. The recount runs on EVERY open, not once: a binary
+// from before the counters (or any other writer) can append and hide posts
+// without maintaining them, and nothing in the database records that it did,
+// so the only safe assumption on open is that the stored counters are stale.
+// It runs in one transaction, before the Store is returned and so before
+// anything is served, and after migrateLogRe so rows whose re it has just
+// filled are counted. Its cost is one pass over the log. The columns and
+// index are added only when missing.
 func migrateReplyCounts(db *sql.DB) error {
 	for _, col := range []string{"replies", "repliers"} {
 		var n int
@@ -113,17 +119,14 @@ func migrateReplyCounts(db *sql.DB) error {
 		return err
 	}
 	defer tx.Rollback()
-	var done int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM meta WHERE k='reply_counts'`).Scan(&done); err != nil {
+	if err := recountReplies(tx); err != nil {
 		return err
 	}
-	if done == 0 {
-		if err := recountReplies(tx); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`INSERT INTO meta(k,v) VALUES('reply_counts','1')`); err != nil {
-			return err
-		}
+	// An earlier build recorded a one-time back-fill under this key and
+	// skipped the recount when it was present. It is no longer read; removing
+	// it means a rollback to that build recounts on its next open too.
+	if _, err := tx.Exec(`DELETE FROM meta WHERE k='reply_counts'`); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -554,15 +557,30 @@ func (o sqlOps) AppendLog(channel, objID, re string, recv int64) error {
 // reply does not count and nothing changes. reply_authors keeps each
 // author's multiplicity, so repliers changes only on an author's first
 // counted reply and when their last one stops counting.
+//
+// A decrement applies only if author has a counted reply to parent: with no
+// reply_authors row (the reply was written by something that did not count
+// it), nothing changes, so no counter goes below zero and no row with
+// n <= 0 is stored.
 func (o sqlOps) countReply(channel, parent, author string, d int) error {
 	pa, _, ok, err := o.LogEntry(channel, parent)
 	if err != nil || !ok || pa == author {
 		return err
 	}
 	var n int
-	if _, err := one(o.queryRow(`INSERT INTO reply_authors(post, author, n) VALUES(?,?,?)
+	if d > 0 {
+		if _, err := one(o.queryRow(`INSERT INTO reply_authors(post, author, n) VALUES(?,?,?)
 		ON CONFLICT(post, author) DO UPDATE SET n=n+excluded.n RETURNING n`, parent, author, d), &n); err != nil {
-		return err
+			return err
+		}
+	} else {
+		ok, err := one(o.queryRow(`UPDATE reply_authors SET n=n+? WHERE post=? AND author=? RETURNING n`, d, parent, author), &n)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil // not counted, so nothing to take away
+		}
 	}
 	first := 0
 	switch {
