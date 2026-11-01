@@ -36,7 +36,8 @@ func bulkLog(t *testing.T, s *SQLite, ch, prefix string, n int, author, re func(
 	return bulkLogIn(t, s, func(int) string { return ch }, prefix, n, author, re, tok)
 }
 
-// bulkLogIn is bulkLog with the channel chosen per post.
+// bulkLogIn is bulkLog with the channel chosen per post. Rows go in through
+// AppendLog, so the stored reply counters are maintained as on submit.
 func bulkLogIn(t *testing.T, s *SQLite, chOf func(int) string, prefix string, n int, author, re func(int) string, tok string) []string {
 	t.Helper()
 	tx, err := s.db.Begin()
@@ -52,8 +53,7 @@ func bulkLogIn(t *testing.T, s *SQLite, chOf func(int) string, prefix string, n 
 			ids[i], author(i), int64(1767225600000+i), ch, tok, int64(i)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(`INSERT INTO chan_log(channel,obj_id,author,recv,re) VALUES(?,?,?,?,?)`,
-			ch, ids[i], author(i), int64(i), re(i)); err != nil {
+		if err := (sqlOps{tx}).AppendLog(ch, ids[i], re(i), int64(i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -195,7 +195,7 @@ func TestDigestScanCost(t *testing.T) {
 	}
 }
 
-// The scan and the reply count run on index seeks: no sort, no full scan.
+// The scan runs on index seeks: no sort, no full scan.
 func TestDigestQueryPlans(t *testing.T) {
 	_, s := costEnv(t)
 	plan := func(q string, args ...any) string {
@@ -225,24 +225,13 @@ func TestDigestQueryPlans(t *testing.T) {
 	if strings.Contains(scan, "TEMP B-TREE") || strings.Contains(scan, "SCAN ") {
 		t.Errorf("scan plan sorts or scans:\n%s", scan)
 	}
-	// The planner's choice depends on the number of parents (it flipped at
-	// 20 before the join order was pinned), so check several chunk sizes,
-	// up to the chunk limit.
-	for _, n := range []int{1, 2, 20, 200, replyCountChunk} {
-		args := []any{}
-		for i := 0; i < n; i++ {
-			args = append(args, fmt.Sprintf("m_%d", i), "k_a")
-		}
-		rc := plan(replyCountSQL(n), append(args, "c_x", 1)...)
-		if !strings.Contains(rc, "SEARCH r USING INDEX chan_log_re (channel=? AND re=?)") || strings.Contains(rc, "SCAN r") {
-			t.Errorf("%d parents: reply-count plan does not seek chan_log_re by (channel, re):\n%s", n, rc)
-		}
-	}
 }
 
-// A timed ban excludes the author's posts and replies while it is live, and
-// from the moment until is reached they count again (banLive: until > now).
-// The store-side filter (banLiveSQL) must agree with banLive at the boundary.
+// A timed ban excludes the author's posts from the window while it is live,
+// and from the moment until is reached they are eligible again (banLive:
+// until > now). The store-side filter (banLiveSQL) must agree with banLive at
+// the boundary. The ban never changes counts: eve's reply to p counts
+// throughout (§8.1).
 func TestDigestBanExpiry(t *testing.T) {
 	e := newEnv(t, unlimited)
 	x := e.createChannel(alice, "exp-x", "public", "anyone", "open", nil)
@@ -254,10 +243,10 @@ func TestDigestBanExpiry(t *testing.T) {
 	e.mustSubmit(e.tok(alice, "ban", map[string]any{"channel": x, "member": kid(eve), "until": until}))
 
 	items, _ := e.digest(bob, "")
-	wantItems(t, "ban live", items, dItem{p, 0, 0})
+	wantItems(t, "ban live", items, dItem{p, 1, 1})
 	e.now.Store(until - 1)
 	items, _ = e.digest(bob, "")
-	wantItems(t, "1 ms before until", items, dItem{p, 0, 0})
+	wantItems(t, "1 ms before until", items, dItem{p, 1, 1})
 	e.now.Store(until)
 	items, _ = e.digest(bob, "")
 	wantItems(t, "at until", items, dItem{p, 1, 1}, dItem{er, 0, 0}, dItem{ev, 0, 0})
@@ -316,7 +305,9 @@ func TestDigestPagesCoverEveryPostOnce(t *testing.T) {
 
 // The hub's digest equals the reference ranking (clankmail.RankDigest, pinned
 // by the vectors) over the same log, for a seeded random log with replies
-// within and across channels, self-replies, hidden posts and a ban.
+// within and across channels, self-replies, hidden posts and a ban. Hidden
+// posts and the banned author's posts go to the reference marked, never in
+// the window.
 func TestDigestMatchesReference(t *testing.T) {
 	e := newEnv(t, unlimited)
 	x := e.createChannel(alice, "ref-x", "public", "anyone", "open", nil)
@@ -350,11 +341,9 @@ func TestDigestMatchesReference(t *testing.T) {
 
 	var posts []clankmail.DigestPost
 	for _, p := range log {
-		banned := p.Channel == y && p.From == kid(eve)
-		if hidden[p.ID] || banned {
-			continue
-		}
-		p.Window = p.From != kid(bob)
+		p.Hidden = hidden[p.ID]
+		p.Banned = p.Channel == y && p.From == kid(eve)
+		p.Window = p.From != kid(bob) && !p.Hidden && !p.Banned
 		posts = append(posts, p)
 	}
 	for _, q := range []struct{ limit, perCh int }{{50, 50}, {20, 5}, {7, 3}} {

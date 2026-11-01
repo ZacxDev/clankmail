@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no cgo
 )
@@ -40,8 +39,14 @@ CREATE TABLE IF NOT EXISTS bans (
   PRIMARY KEY(channel, key));
 CREATE TABLE IF NOT EXISTS chan_log (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, obj_id TEXT NOT NULL,
-  author TEXT NOT NULL, recv INTEGER NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, re TEXT);
+  author TEXT NOT NULL, recv INTEGER NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, re TEXT,
+  replies INTEGER NOT NULL DEFAULT 0, repliers INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS chan_log_channel ON chan_log(channel, seq);
+-- reply_authors holds, per channel post, how many of its counted replies
+-- (§8.1) each author has: repliers is the number of its rows.
+CREATE TABLE IF NOT EXISTS reply_authors (
+  post TEXT NOT NULL, author TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(post, author)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS subs (
   id TEXT PRIMARY KEY, key TEXT NOT NULL, channel TEXT NOT NULL, start_seq INTEGER NOT NULL,
   revoked INTEGER NOT NULL DEFAULT 0);
@@ -76,7 +81,77 @@ func OpenSQLite(path string) (*SQLite, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateReplyCounts(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &SQLite{db: db}, nil
+}
+
+// migrateReplyCounts gives a database created before the stored reply
+// counters (§8.1) its replies/repliers columns, the (channel, obj_id) index
+// that maintaining them seeks by, and counters back-filled from the log.
+// Idempotent: the columns and index are added only when missing, and the
+// back-fill runs once, in one transaction with the marker that records it.
+func migrateReplyCounts(db *sql.DB) error {
+	for _, col := range []string{"replies", "repliers"} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('chan_log') WHERE name=?`, col).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE chan_log ADD COLUMN ` + col + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS chan_log_obj ON chan_log(channel, obj_id)`); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var done int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM meta WHERE k='reply_counts'`).Scan(&done); err != nil {
+		return err
+	}
+	if done == 0 {
+		if err := recountReplies(tx); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO meta(k,v) VALUES('reply_counts','1')`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// recountReplies rebuilds every post's reply counters from the log, by the
+// §8.1 definition that AppendLog and HideLog maintain: a reply is a log post
+// that is not hidden, whose re names a post in the same channel's log, and
+// whose author is not that post's author. It replaces whatever counters were
+// stored, so running it again changes nothing.
+func recountReplies(tx *sql.Tx) error {
+	for _, q := range []string{
+		`DELETE FROM reply_authors`,
+		`UPDATE chan_log SET replies=0, repliers=0 WHERE replies!=0 OR repliers!=0`,
+		`INSERT INTO reply_authors(post, author, n)
+			SELECT p.obj_id, r.author, COUNT(*) FROM chan_log r
+			JOIN chan_log p ON p.channel=r.channel AND p.obj_id=r.re
+			WHERE r.hidden=0 AND r.re!='' AND r.author!=p.author
+			GROUP BY p.obj_id, r.author`,
+		`UPDATE chan_log SET
+			replies=(SELECT SUM(n) FROM reply_authors a WHERE a.post=chan_log.obj_id),
+			repliers=(SELECT COUNT(*) FROM reply_authors a WHERE a.post=chan_log.obj_id)
+			WHERE obj_id IN (SELECT post FROM reply_authors)`,
+	} {
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrateLogRe adds chan_log.re and its index to a database created before
@@ -139,8 +214,33 @@ func (s *SQLite) Tx(ctx context.Context, fn func(Ops) error) error {
 
 type sqlOps struct{ tx *sql.Tx }
 
+// sqlHook, when set (tests only), receives every statement an Ops runs, with
+// its arguments, so a test can check the plan of each one.
+var sqlHook func(query string, args []any)
+
+func (o sqlOps) query(q string, args ...any) (*sql.Rows, error) {
+	if sqlHook != nil {
+		sqlHook(q, args)
+	}
+	return o.tx.Query(q, args...)
+}
+
+func (o sqlOps) queryRow(q string, args ...any) *sql.Row {
+	if sqlHook != nil {
+		sqlHook(q, args)
+	}
+	return o.tx.QueryRow(q, args...)
+}
+
+func (o sqlOps) execRes(q string, args ...any) (sql.Result, error) {
+	if sqlHook != nil {
+		sqlHook(q, args)
+	}
+	return o.tx.Exec(q, args...)
+}
+
 func (o sqlOps) exec(q string, args ...any) error {
-	_, err := o.tx.Exec(q, args...)
+	_, err := o.execRes(q, args...)
 	return err
 }
 
@@ -160,7 +260,7 @@ func (o sqlOps) PutObject(ob Obj) error {
 
 func (o sqlOps) Object(id string) (*Obj, error) {
 	var ob Obj
-	ok, err := one(o.tx.QueryRow(`SELECT id,type,from_key,ts,channel,token,recv FROM objects WHERE id=?`, id),
+	ok, err := one(o.queryRow(`SELECT id,type,from_key,ts,channel,token,recv FROM objects WHERE id=?`, id),
 		&ob.ID, &ob.Type, &ob.From, &ob.TS, &ob.Channel, &ob.Token, &ob.Recv)
 	if !ok {
 		return nil, err
@@ -170,7 +270,7 @@ func (o sqlOps) Object(id string) (*Obj, error) {
 
 func (o sqlOps) handle(where string, arg string) (*Handle, error) {
 	var h Handle
-	ok, err := one(o.tx.QueryRow(`SELECT name,key,obj_id,ts FROM handles WHERE `+where+`=?`, arg),
+	ok, err := one(o.queryRow(`SELECT name,key,obj_id,ts FROM handles WHERE `+where+`=?`, arg),
 		&h.Name, &h.Key, &h.ObjID, &h.TS)
 	if !ok {
 		return nil, err
@@ -199,7 +299,7 @@ func (o sqlOps) PutGrant(g Grant) error {
 
 func (o sqlOps) Grant(id string) (*Grant, error) {
 	var g Grant
-	ok, err := one(o.tx.QueryRow(`SELECT id,principal,agent,name,exp,revoked FROM grants WHERE id=?`, id),
+	ok, err := one(o.queryRow(`SELECT id,principal,agent,name,exp,revoked FROM grants WHERE id=?`, id),
 		&g.ID, &g.Principal, &g.Agent, &g.Name, &g.Exp, &g.Revoked)
 	if !ok {
 		return nil, err
@@ -208,7 +308,7 @@ func (o sqlOps) Grant(id string) (*Grant, error) {
 }
 
 func (o sqlOps) Grants(principal string) ([]Grant, error) {
-	rows, err := o.tx.Query(`SELECT id,principal,agent,name,exp,revoked FROM grants
+	rows, err := o.query(`SELECT id,principal,agent,name,exp,revoked FROM grants
 		WHERE principal=? AND revoked=0 ORDER BY rowid`, principal)
 	if err != nil {
 		return nil, err
@@ -239,7 +339,7 @@ func (o sqlOps) enrolls(where, arg string) ([]Enroll, error) {
 
 // enrollRows scans enroll rows in arrival order.
 func (o sqlOps) enrollRows(q string, args ...any) ([]Enroll, error) {
-	rows, err := o.tx.Query(q, args...)
+	rows, err := o.query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +379,7 @@ func (o sqlOps) RevokeKey(key string) error {
 
 func (o sqlOps) KeyRevoked(key string) (bool, error) {
 	var x int
-	return one(o.tx.QueryRow(`SELECT 1 FROM revoked_keys WHERE key=?`, key), &x)
+	return one(o.queryRow(`SELECT 1 FROM revoked_keys WHERE key=?`, key), &x)
 }
 
 func (o sqlOps) SetAllow(owner, key string, allowed bool) error {
@@ -295,7 +395,7 @@ func (o sqlOps) ClearAllowFor(key string) error {
 
 func (o sqlOps) Allowed(owner, key string) (bool, error) {
 	var x int
-	return one(o.tx.QueryRow(`SELECT 1 FROM allow WHERE owner=? AND key=?`, owner, key), &x)
+	return one(o.queryRow(`SELECT 1 FROM allow WHERE owner=? AND key=?`, owner, key), &x)
 }
 
 func (o sqlOps) AddInbox(owner, queue, objID, thread string) error {
@@ -304,7 +404,7 @@ func (o sqlOps) AddInbox(owner, queue, objID, thread string) error {
 
 // entries scans (seq, token, thread) rows.
 func (o sqlOps) entries(q string, args ...any) ([]Entry, error) {
-	rows, err := o.tx.Query(q, args...)
+	rows, err := o.query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +436,7 @@ func (o sqlOps) PutChannel(c Channel) error {
 
 func (o sqlOps) Channel(id string) (*Channel, error) {
 	var data string
-	ok, err := one(o.tx.QueryRow(`SELECT data FROM channels WHERE id=?`, id), &data)
+	ok, err := one(o.queryRow(`SELECT data FROM channels WHERE id=?`, id), &data)
 	if !ok {
 		return nil, err
 	}
@@ -348,7 +448,7 @@ func (o sqlOps) Channel(id string) (*Channel, error) {
 }
 
 func (o sqlOps) Channels() ([]Channel, error) {
-	rows, err := o.tx.Query(`SELECT data FROM channels ORDER BY rowid`)
+	rows, err := o.query(`SELECT data FROM channels ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +470,7 @@ func (o sqlOps) Channels() ([]Channel, error) {
 
 func (o sqlOps) SlugChannel(slug string) (string, error) {
 	var c string
-	_, err := one(o.tx.QueryRow(`SELECT channel FROM slugs WHERE slug=?`, slug), &c)
+	_, err := one(o.queryRow(`SELECT channel FROM slugs WHERE slug=?`, slug), &c)
 	return c, err
 }
 
@@ -384,7 +484,7 @@ func (o sqlOps) UnbindSlug(slug string) error {
 
 func (o sqlOps) Membership(channel, key string) (string, error) {
 	var s string
-	_, err := one(o.tx.QueryRow(`SELECT state FROM members WHERE channel=? AND key=?`, channel, key), &s)
+	_, err := one(o.queryRow(`SELECT state FROM members WHERE channel=? AND key=?`, channel, key), &s)
 	return s, err
 }
 
@@ -398,7 +498,7 @@ func (o sqlOps) SetMembership(channel, key, state string) error {
 
 func (o sqlOps) MemberCount(channel string) (int, error) {
 	var n int
-	_, err := one(o.tx.QueryRow(`SELECT COUNT(*) FROM members WHERE channel=? AND state='member'`, channel), &n)
+	_, err := one(o.queryRow(`SELECT COUNT(*) FROM members WHERE channel=? AND state='member'`, channel), &n)
 	return n, err
 }
 
@@ -414,25 +514,96 @@ func (o sqlOps) LiftBan(channel, key string) error {
 func (o sqlOps) BanUntil(channel, key string) (int64, int, bool, error) {
 	var until int64
 	var rank int
-	ok, err := one(o.tx.QueryRow(`SELECT until, rank FROM bans WHERE channel=? AND key=?`, channel, key), &until, &rank)
+	ok, err := one(o.queryRow(`SELECT until, rank FROM bans WHERE channel=? AND key=?`, channel, key), &until, &rank)
 	return until, rank, ok, err
 }
 
+// AppendLog appends a post and maintains the stored reply counters (§8.1):
+// if the post is a reply to a post already in this channel's log by someone
+// else, that post's counters go up; and replies that arrived before this post
+// (an id can be known before its post arrives) are counted for it now. Each
+// is a seek by index: by (channel, obj_id) for the parent, by (channel, re)
+// for the replies that name this post.
 func (o sqlOps) AppendLog(channel, objID, re string, recv int64) error {
-	return o.exec(`INSERT INTO chan_log(channel,obj_id,author,recv,re)
-		SELECT ?, id, from_key, ?, ? FROM objects WHERE id=?`, channel, recv, re, objID)
+	if err := o.exec(`INSERT INTO chan_log(channel,obj_id,author,recv,re)
+		SELECT ?, id, from_key, ?, ? FROM objects WHERE id=?`, channel, recv, re, objID); err != nil {
+		return err
+	}
+	author, _, _, err := o.LogEntry(channel, objID)
+	if err != nil {
+		return err
+	}
+	if re != "" {
+		if err := o.countReply(channel, re, author, +1); err != nil {
+			return err
+		}
+	}
+	if err := o.exec(`INSERT INTO reply_authors(post, author, n)
+		SELECT ?, author, COUNT(*) FROM chan_log INDEXED BY chan_log_re
+		WHERE channel=? AND re=? AND hidden=0 AND author!=? GROUP BY author`, objID, channel, objID, author); err != nil {
+		return err
+	}
+	return o.exec(`UPDATE chan_log SET
+		replies=(SELECT COALESCE(SUM(n),0) FROM reply_authors WHERE post=?),
+		repliers=(SELECT COUNT(*) FROM reply_authors WHERE post=?)
+		WHERE channel=? AND obj_id=?`, objID, objID, channel, objID)
+}
+
+// countReply adds d (+1 or -1) to the counters of parent for one reply by
+// author, if parent is a post in channel's log by someone else; otherwise the
+// reply does not count and nothing changes. reply_authors keeps each
+// author's multiplicity, so repliers changes only on an author's first
+// counted reply and when their last one stops counting.
+func (o sqlOps) countReply(channel, parent, author string, d int) error {
+	pa, _, ok, err := o.LogEntry(channel, parent)
+	if err != nil || !ok || pa == author {
+		return err
+	}
+	var n int
+	if _, err := one(o.queryRow(`INSERT INTO reply_authors(post, author, n) VALUES(?,?,?)
+		ON CONFLICT(post, author) DO UPDATE SET n=n+excluded.n RETURNING n`, parent, author, d), &n); err != nil {
+		return err
+	}
+	first := 0
+	switch {
+	case d > 0 && n == 1:
+		first = 1
+	case d < 0 && n == 0:
+		first = -1
+		if err := o.exec(`DELETE FROM reply_authors WHERE post=? AND author=?`, parent, author); err != nil {
+			return err
+		}
+	}
+	return o.exec(`UPDATE chan_log SET replies=replies+?, repliers=repliers+? WHERE channel=? AND obj_id=?`,
+		d, first, channel, parent)
 }
 
 func (o sqlOps) LogEntry(channel, objID string) (string, bool, bool, error) {
 	var a string
 	var hidden bool
-	ok, err := one(o.tx.QueryRow(`SELECT author, hidden FROM chan_log WHERE channel=? AND obj_id=?`, channel, objID),
+	ok, err := one(o.queryRow(`SELECT author, hidden FROM chan_log INDEXED BY chan_log_obj WHERE channel=? AND obj_id=?`, channel, objID),
 		&a, &hidden)
 	return a, hidden, ok, err
 }
 
+// HideLog hides a post. The first time, it also takes the post out of its
+// parent's counters if it was counted there; hiding a hidden post again
+// changes nothing, since a post is hidden for good.
 func (o sqlOps) HideLog(channel, objID string) error {
-	return o.exec(`UPDATE chan_log SET hidden=1 WHERE channel=? AND obj_id=?`, channel, objID)
+	var author, re string
+	var hidden bool
+	ok, err := one(o.queryRow(`SELECT author, COALESCE(re,''), hidden FROM chan_log INDEXED BY chan_log_obj
+		WHERE channel=? AND obj_id=?`, channel, objID), &author, &re, &hidden)
+	if err != nil || !ok || hidden {
+		return err
+	}
+	if err := o.exec(`UPDATE chan_log SET hidden=1 WHERE channel=? AND obj_id=?`, channel, objID); err != nil {
+		return err
+	}
+	if re == "" {
+		return nil
+	}
+	return o.countReply(channel, re, author, -1)
 }
 
 func (o sqlOps) Log(channel string, after int64, limit int) ([]Entry, error) {
@@ -442,14 +613,14 @@ func (o sqlOps) Log(channel string, after int64, limit int) ([]Entry, error) {
 
 func (o sqlOps) PostsSince(channel string, since int64) (int, error) {
 	var n int
-	_, err := one(o.tx.QueryRow(`SELECT COUNT(*) FROM chan_log WHERE channel=? AND hidden=0 AND recv>=?`,
+	_, err := one(o.queryRow(`SELECT COUNT(*) FROM chan_log WHERE channel=? AND hidden=0 AND recv>=?`,
 		channel, since), &n)
 	return n, err
 }
 
 func (o sqlOps) LogHead() (int64, error) {
 	var n int64
-	_, err := one(o.tx.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM chan_log`), &n)
+	_, err := one(o.queryRow(`SELECT COALESCE(MAX(seq),0) FROM chan_log`), &n)
 	return n, err
 }
 
@@ -459,7 +630,7 @@ func (o sqlOps) PutSub(s Sub) error {
 }
 
 func (o sqlOps) subs(q string, args ...any) ([]Sub, error) {
-	rows, err := o.tx.Query(`SELECT id,key,channel,start_seq,revoked FROM subs WHERE `+q+` ORDER BY rowid`, args...)
+	rows, err := o.query(`SELECT id,key,channel,start_seq,revoked FROM subs WHERE `+q+` ORDER BY rowid`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -492,15 +663,17 @@ func (o sqlOps) RevokeSub(id string) error {
 // digestScanSQL reads one channel's log forward from a cursor. It is pinned
 // to the (channel, seq) index, so it is one range seek with rows already in
 // cursor order: no sort, and no rows of other channels. It never reads a
-// token. Parameters: reader, now, channel, after, limit.
-const digestScanSQL = `SELECT l.seq, l.obj_id, l.author, COALESCE(l.re,''), ob.ts,
+// token, and it reads each post's stored reply counters with the row, so
+// counting costs nothing per reply. Parameters: reader, now, channel, after,
+// limit.
+const digestScanSQL = `SELECT l.seq, l.obj_id, l.author, COALESCE(l.re,''), ob.ts, l.replies, l.repliers,
 	l.hidden=0 AND l.author!=? AND NOT EXISTS (
 		SELECT 1 FROM bans b WHERE b.channel=l.channel AND b.key=l.author AND ` + banLiveSQL + `)
 	FROM chan_log l INDEXED BY chan_log_channel JOIN objects ob ON ob.id=l.obj_id
 	WHERE l.channel=? AND l.seq>? ORDER BY l.seq LIMIT ?`
 
 func (o sqlOps) DigestScan(reader, channel string, after int64, limit int, now int64) ([]LogRow, error) {
-	rows, err := o.tx.Query(digestScanSQL, reader, now, channel, after, limit)
+	rows, err := o.query(digestScanSQL, reader, now, channel, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -508,7 +681,7 @@ func (o sqlOps) DigestScan(reader, channel string, after int64, limit int, now i
 	var out []LogRow
 	for rows.Next() {
 		var r LogRow
-		if err := rows.Scan(&r.Seq, &r.ID, &r.Author, &r.Re, &r.TS, &r.Eligible); err != nil {
+		if err := rows.Scan(&r.Seq, &r.ID, &r.Author, &r.Re, &r.TS, &r.Replies, &r.Repliers, &r.Eligible); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -516,57 +689,8 @@ func (o sqlOps) DigestScan(reader, channel string, after int64, limit int, now i
 	return out, rows.Err()
 }
 
-// replyCountChunk bounds the parents (two parameters each) per query.
-const replyCountChunk = 400
-
-// replyCountSQL counts, in the store, the replies to n parents of one
-// channel, seeking each parent through the (channel, re) index. CROSS JOIN
-// pins the parents as the outer loop: left to choose, the planner flips the
-// join for some n (measured at 20) and walks every row of the channel
-// through the index's channel prefix instead. Parameters: n (id, author)
-// pairs, then channel, then now.
-func replyCountSQL(n int) string {
-	return `WITH p(id, author) AS (VALUES (?,?)` + strings.Repeat(",(?,?)", n-1) + `)
-	SELECT p.id, COUNT(*), COUNT(DISTINCT r.author)
-	FROM p CROSS JOIN chan_log r INDEXED BY chan_log_re ON r.channel=? AND r.re=p.id
-	WHERE r.hidden=0 AND r.author!=p.author AND NOT EXISTS (
-		SELECT 1 FROM bans b WHERE b.channel=r.channel AND b.key=r.author AND ` + banLiveSQL + `)
-	GROUP BY p.id`
-}
-
-func (o sqlOps) ReplyCounts(channel string, parents []ReplyParent, now int64) (map[string]ReplyCount, error) {
-	out := map[string]ReplyCount{}
-	for len(parents) > 0 {
-		chunk := parents[:min(len(parents), replyCountChunk)]
-		parents = parents[len(chunk):]
-		args := make([]any, 0, 2*len(chunk)+2)
-		for _, p := range chunk {
-			args = append(args, p.ID, p.Author)
-		}
-		args = append(args, channel, now)
-		rows, err := o.tx.Query(replyCountSQL(len(chunk)), args...)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var id string
-			var c ReplyCount
-			if err := rows.Scan(&id, &c.Replies, &c.Repliers); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out[id] = c
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
 func (o sqlOps) UseAuth(id string, ts int64) (bool, error) {
-	res, err := o.tx.Exec(`INSERT OR IGNORE INTO auth_seen(id,ts) VALUES(?,?)`, id, ts)
+	res, err := o.execRes(`INSERT OR IGNORE INTO auth_seen(id,ts) VALUES(?,?)`, id, ts)
 	if err != nil {
 		return false, err
 	}

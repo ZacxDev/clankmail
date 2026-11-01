@@ -147,7 +147,7 @@ func TestDigestEligibilityAndRanking(t *testing.T) {
 	d1 := e.post(dave, x, "d1", "")             //
 	e.post(bob, x, "bob's own post", "")        // rule 4: own post
 	e.post(eve, x, "eve's post", "")            // rule 5: eve is banned below
-	e.post(eve, x, "eve replies to c1", c1)     // banned author: not a candidate, not counted
+	e.post(eve, x, "eve replies to c1", c1)     // banned author: not a candidate, but counted
 	hid := e.post(dave, x, "to be removed", "") // rule 1: hidden
 	e.mustSubmit(e.tok(dave, "remove", map[string]any{"channel": x, "target": hid}))
 	hr := e.post(scout, x, "removed reply to c1", c1) // hidden reply: not counted
@@ -159,7 +159,8 @@ func TestDigestEligibilityAndRanking(t *testing.T) {
 	e.mustSubmit(e.tok(alice, "ban", map[string]any{"channel": x, "member": kid(eve)}))
 
 	items, r := e.digest(bob, "")
-	wantItems(t, "bob's digest", items, dItem{d1, 2, 2}, dItem{c1, 1, 1}, dItem{r2, 0, 0}, dItem{r1, 0, 0})
+	// c1 and d1 both count 2 (c1: eve, banned, and bob); d1 is newer.
+	wantItems(t, "bob's digest", items, dItem{d1, 2, 2}, dItem{c1, 2, 2}, dItem{r2, 0, 0}, dItem{r1, 0, 0})
 	if r.body["omitted"].(float64) != 0 || r.body["more"] != false {
 		t.Fatalf("omitted/more: %v", r.body)
 	}
@@ -352,8 +353,11 @@ func TestLogReMigration(t *testing.T) {
 	e.mustSubmit(e.subTok(bob, x))
 	p := e.post(carol, x, "parent", "")
 	e.post(dave, x, "reply", p)
-	// The old schema: no re column, so no (channel, re) index either.
-	if _, err := s1.db.Exec(`DROP INDEX IF EXISTS chan_log_re; ALTER TABLE chan_log DROP COLUMN re`); err != nil {
+	// The schema before the digest: no re column, so no (channel, re)
+	// index, and no stored reply counters either.
+	if _, err := s1.db.Exec(`DROP INDEX IF EXISTS chan_log_re; ALTER TABLE chan_log DROP COLUMN re;
+		DROP INDEX IF EXISTS chan_log_obj; ALTER TABLE chan_log DROP COLUMN replies; ALTER TABLE chan_log DROP COLUMN repliers;
+		DROP TABLE reply_authors; DROP TABLE meta`); err != nil {
 		t.Fatal(err)
 	}
 	s1.Close()

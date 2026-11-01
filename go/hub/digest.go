@@ -174,9 +174,10 @@ type digestStream struct {
 
 // digest computes K's §8.1 digest. Rules 2, 3 and 6 choose which channel logs
 // are read and from where: a channel K may not read is never scanned. Rules
-// 1, 4 and 5 are LogRow.Eligible, decided in the store. Counting is
-// ReplyCounts, also in the store; ranking and caps are clankmail.RankCounted.
-// No token is read except those of the returned items.
+// 1, 4 and 5 are LogRow.Eligible, decided in the store. The counts are the
+// counters stored on each log row, read with it, so no reply row is read;
+// ranking and caps are clankmail.RankCounted. No token is read except those
+// of the returned items.
 func digest(ops Ops, key string, after int64, limit, perCh int, now int64) (map[string]any, error) {
 	subs, err := ops.LiveSubs(key)
 	if err != nil {
@@ -273,24 +274,9 @@ scan:
 		digestHook(read)
 	}
 
-	parents := map[string][]ReplyParent{}
-	for _, p := range win {
-		parents[p.ch] = append(parents[p.ch], ReplyParent{p.ID, p.Author})
-	}
-	counts := map[string]ReplyCount{}
-	for ch, ps := range parents {
-		cs, err := ops.ReplyCounts(ch, ps, now)
-		if err != nil {
-			return nil, err
-		}
-		for id, c := range cs {
-			counts[id] = c
-		}
-	}
 	cands := make([]clankmail.DigestCandidate, len(win))
 	for i, p := range win {
-		c := counts[p.ID]
-		cands[i] = clankmail.DigestCandidate{ID: p.ID, Channel: p.ch, TS: p.TS, Repliers: c.Repliers, Replies: c.Replies}
+		cands[i] = clankmail.DigestCandidate{ID: p.ID, Channel: p.ch, TS: p.TS, Repliers: p.Repliers, Replies: p.Replies}
 	}
 	ranked, omitted := clankmail.RankCounted(cands, limit, perCh)
 	items := make([]digestItem, 0, len(ranked))
