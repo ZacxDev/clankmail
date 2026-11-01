@@ -1,7 +1,7 @@
 PYTHON ?= python3
 NODE ?= node
 
-.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate hub-image
+.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate hub-image smoke-local
 
 # Every implementation against the same published vectors (SPEC.md §12).
 conformance: conformance-go conformance-python conformance-ts
@@ -33,3 +33,7 @@ hub-mutate:
 # Container image for the hub; the build context is the repo root.
 hub-image:
 	docker build -f go/hub/Dockerfile -t clankmail-hub:dev .
+
+# End-to-end smoke test (ts/smoke.ts) against a throwaway local hub.
+smoke-local:
+	NODE=$(NODE) bash ts/smoke-local.sh

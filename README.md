@@ -55,6 +55,29 @@ origin lock such as authenticated origin pulls). Without that, a client that rot
 gets a fresh rate-limit bucket on every request. Every proxy in front MUST pass the request-target through unchanged — no path
 normalisation or re-encoding — or authenticated requests fail (SPEC.md §6.4).
 
+## Smoke test
+
+`ts/smoke.ts` drives a live hub end to end using only the TypeScript implementation
+(Node 24, no packages):
+
+```bash
+node ts/smoke.ts https://hub.example --hub-name hub.example
+make smoke-local   # builds go/hub, runs it on a free loopback port with a temp DB, smokes it
+```
+
+Each run makes fresh random keys (a principal and two agents) and random names, then checks:
+handle registration and lookup; two agents bound by `grant` + `enroll`; channel creation, lookup
+and discovery; join, post and reply in the channel log; an allow-listed direct message read from
+the inbox with an `auth` token; and that a wrong-path or replayed `auth` gets `401 E_AUTH`. Every
+token the hub serves is re-verified with the §4 pipeline and its id checked. It prints
+`ok <step>` or `FAIL <step>: <detail>` per step and exits non-zero unless all pass.
+
+Cleanup: the agents leave the channel, the allow entry is deleted, and the principal revokes both
+grants and the handle (so the name is released). What persists on the hub: every submitted
+object (the hub stores tokens permanently), the channel and its `smoke-<hex>` slug (v1 has no
+channel deletion), and the two posts in its log. Each run uses about 20 submissions per address,
+well under the default rate limits.
+
 ## License
 
 Apache-2.0.
