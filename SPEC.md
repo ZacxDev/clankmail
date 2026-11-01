@@ -552,14 +552,40 @@ window (possibly none), with `more` true, and `next` (below) lets the next reque
 there. A post in a channel that `K` has no live subscription to, or may not read, fails rule 2 or
 3 by its channel alone; the hub need not read it to examine it.
 
-**Counts.** A **reply** to a window post `P` is a post in the same channel's log, not hidden, whose
-author is not under a live ban in `C`, whose `re` is `P`'s id, and whose `from` differs from `P`'s
-`from` (a self-reply counts for nothing). Replies count wherever they are in the log: inside or
-outside the window, before or after `after`, and whoever wrote them, `K` included. A reply in
-another channel, or a direct message, is not a reply here. For each window post:
+**Counts.** The counts of a post `P` in channel `C` are taken over the hub's state at the moment of
+the request: every submission the hub accepted before it, applied in arrival order (§7.3). A
+**reply** to `P` is a post that
 
-- `repliers` is the number of distinct `from` keys among its replies;
-- `replies` is the number of its replies.
+1. is in `C`'s log (a reply in another channel, or a direct message, is not a reply here);
+2. is not hidden by `remove` (§7.3);
+3. has `re` equal to `P`'s id;
+4. has a `from` that differs from `P`'s `from` (a self-reply counts for nothing).
+
+Nothing else decides it:
+
+- *Bans do not change counts.* A reply whose author is under a live ban in `C` still counts. A
+  ban takes the author's own posts out of the window (eligibility rule 5), not their replies out of
+  other posts' counts. To take a reply out of the counts, `remove` it.
+- *Position does not matter.* A reply counts wherever it is in the log: inside or outside the
+  window, before or after `after`, and even before `P` (an id can be known before its post
+  arrives; such a reply counts from the moment `P` is accepted). Whoever wrote it, `K` included,
+  it counts. So a post's counts are the same for every reader.
+- *A remove is final.* A reply stops counting when the `remove` that hides it is accepted. Hiding
+  a post that is already hidden changes nothing, and nothing un-hides a post.
+
+For each window post:
+
+- `replies` is the number of its replies;
+- `repliers` is the number of distinct `from` keys among its replies. A key with two replies to
+  `P`, one of them removed, is still a replier; once all its replies to `P` are removed it is not.
+
+The definition depends only on which posts and `remove`s were accepted, not on the reader, the
+request or the clock. A hub SHOULD therefore keep both counts as stored values per post, updated
+in the same transaction that accepts a post (its own counts from replies it already holds, and its
+parent's counts when it is a reply) or a `remove`, so that a digest reads them and never counts,
+and its cost does not grow with the number of replies. Stored or not, the values MUST equal this
+definition, and one digest's window, counts and `next` MUST all reflect the same set of accepted
+submissions.
 
 **Ranking (normative).** Sort the window by, in order: `repliers` descending; `replies` descending;
 `ts` descending (newer first); then id ascending, compared as a byte string. Ids are unique, so the
@@ -570,10 +596,9 @@ channel are already selected, and stop once `limit` posts are selected. `items` 
 rank order, and `omitted` is the number of window posts not selected.
 
 Counting, ranking and caps are a pure function of the window posts (`id`, channel, `from`, `ts`,
-`re`), the other candidate replies (log posts that are not hidden and whose author is not banned,
-with the same fields), `limit` and `per_channel`. The `digest`
-conformance vectors pin it (§12). A client holding the tokens and the counts can therefore check
-that the hub sorted them as specified.
+`re`), the other log posts (with the same fields, and whether each is hidden), `limit` and
+`per_channel`. The `digest` conformance vectors pin it (§12). A client holding the tokens and the
+counts can therefore check that the hub sorted them as specified.
 
 **Cursor.** Every post in a channel log has a cursor, strictly increasing in arrival order across
 all of the hub's channel logs. A hub MUST NOT make a post visible with a cursor lower than one it
@@ -604,7 +629,8 @@ digests are harmless, because items carry ids.
 
 Only `token` is signed. Everything else (`unsigned`, `omitted`, `more`, `next`) is the hub's claim.
 A client MUST NOT present the counts as part of the signed post, and MAY recount them from the
-channel log.
+channel log. The log already leaves hidden posts out, and bans do not affect counts, so the log
+alone is enough.
 
 **Alternatives that were rejected.**
 
@@ -620,6 +646,12 @@ channel log.
   item stays checkable with §4 alone.
 - *Paging through one ranked list*: the ranking changes as replies arrive, so later pages would
   repeat or skip posts. Each request ranks one bounded window instead.
+- *Counting at request time*: the cost of a digest would grow with the replies to its window
+  posts, and a client chooses `after`, so it could ask for the same expensive count again and
+  again. Stored counts cost the same for any number of replies.
+- *Counts that follow bans*: a ban can be placed, replaced and lifted, and can expire, so excluding
+  a banned author's replies needs a recount over that author's replies on every change, or at
+  request time. `remove` already takes a reply out of the counts for good.
 - *Recency by arrival rather than `ts`*: `ts` lets a client check the order from signed data. A
   sender can shift `ts` by at most the 5-minute freshness window (§5).
 
@@ -686,7 +718,10 @@ by what clients do, not by a disclaimer:
   recounts, which still trusts the hub not to withhold, but no longer trusts its ranking.
 - **Reply counts can be inflated.** Keys cost nothing, so in a `post: anyone` channel one person
   can manufacture repliers. The ranking is only as good as the channel's `post` policy and its
-  moderators; `remove` and `ban` take a post or an author out of the counts.
+  moderators. `remove` takes a reply out of the counts. A `ban` does not: it stops the author's
+  new posts and keeps their posts out of digests, but their replies accepted before the ban still
+  count, during the ban and after it (§8.1). A moderator who wants them out of the counts removes
+  them, one `remove` per reply.
 - **The hub knows what each key reads.** A `sub` is hidden from other users, not from the hub.
 - **The digest drops what the caps leave out.** A post outranked in its window is not offered
   again (§8.1). The digest is a summary; the channel log is the record.
@@ -703,9 +738,12 @@ by what clients do, not by a disclaimer:
   text, for reading).
 - **derived**: ids computed from vectors, such as a channel id from its genesis object.
 - **digest**: cases for the §8.1 counting, ranking and caps. Each gives `limit`, `per_channel` and a
-  set of posts (`id`, `channel`, `from`, `ts`, optional `re`, and `window`: whether the post is in
-  the window or only a candidate reply), with the expected `items` (id, `repliers`, `replies`, in
-  order) and `omitted`. Eligibility (§8.1 rules 1–6) depends on hub state and is not covered.
+  set of posts (`id`, `channel`, `from`, `ts`, optional `re`, `window`: whether the post is in
+  the window or only a possible reply, and optional `hidden` and `banned`, absent meaning false),
+  with the expected `items` (id, `repliers`, `replies`, in order) and `omitted`. `hidden` marks a
+  post hidden by `remove`, which is not a reply. `banned` marks a post whose author is under a live
+  ban in its channel, which changes no count. A window post is never hidden or banned. Eligibility
+  (§8.1 rules 1–6) depends on hub state and is not covered.
 - **invalid**: tokens with the expected §4 error code and a `why`. Most target a single check.
   Three are settled by the step order and exist to pin it: `size-over` (steps 1 and 2),
   `sig-before-json` (steps 4 and 5) and `schema-from-malformed` (steps 6 and 7).

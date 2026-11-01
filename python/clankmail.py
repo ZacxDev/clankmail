@@ -222,7 +222,9 @@ def validate_schema(m: dict):
 def rank_digest(posts, limit, per_channel):
     """SPEC.md §8.1 counting, ranking and caps over hub-filtered posts.
 
-    posts: dicts with id, channel, from, ts, optional re, and window (bool).
+    posts: dicts with id, channel, from, ts, optional re, window (bool), and
+    optional hidden / banned (bool). A hidden post is not a reply; a banned
+    author's reply still counts (bans do not affect counts).
     Returns (items, omitted); items are {id, repliers, replies} in rank order.
     """
     window = [p for p in posts if p["window"]]
@@ -231,7 +233,7 @@ def rank_digest(posts, limit, per_channel):
     replies = {p["id"]: 0 for p in window}
     for r in posts:
         parent = by_id.get(r.get("re", ""))
-        if parent and r["channel"] == parent["channel"] and r["from"] != parent["from"]:
+        if parent and not r.get("hidden", False) and r["channel"] == parent["channel"] and r["from"] != parent["from"]:
             repliers[parent["id"]].add(r["from"])
             replies[parent["id"]] += 1
     # Byte-string id order: ids are ASCII, so str order is byte order. Sort by id

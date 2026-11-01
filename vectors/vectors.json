@@ -1545,6 +1545,94 @@
       ],
       "items": [],
       "omitted": 0
+    },
+    {
+      "name": "remove-and-ban",
+      "why": "a removed reply does not count, a replier whose counted replies are all removed is not a replier, and a banned author's reply still counts",
+      "limit": 20,
+      "per_channel": 20,
+      "posts": [
+        {
+          "id": "m_g4gzuphpxsslehbk6epjhnj3b36asofbw3ap3nyav72r2lc66z4q",
+          "channel": "c_qkygv7yvyh7mupjvyacle6tya4kwrqd3ps2u3sjwkgzjyrw67lmq",
+          "from": "k_idm5vq65dykcpqc2k4sxc2iurwm6nu5ou5uczbgtgpxpejxgfjeq",
+          "ts": 1767225600001,
+          "window": true
+        },
+        {
+          "id": "m_kq22nyweuzmihne6cz3mdojdjzsad2iyreh774x6f7syaptludia",
+          "channel": "c_qkygv7yvyh7mupjvyacle6tya4kwrqd3ps2u3sjwkgzjyrw67lmq",
+          "from": "k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq",
+          "ts": 1767225600002,
+          "window": true
+        },
+        {
+          "id": "m_uq5xa2bp4ruzcfl7wogji5slavsmuayc2gbd2bvrarhn6n3tfqta",
+          "channel": "c_qkygv7yvyh7mupjvyacle6tya4kwrqd3ps2u3sjwkgzjyrw67lmq",
+          "from": "k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq",
+          "ts": 1767225601021,
+          "re": "m_g4gzuphpxsslehbk6epjhnj3b36asofbw3ap3nyav72r2lc66z4q",
+          "window": false
+        },
+        {
+          "id": "m_qhvi5cacyxzzueilevz6vmz2pz4b7nmckdeayy3jfqyqnn34da5q",
+          "channel": "c_qkygv7yvyh7mupjvyacle6tya4kwrqd3ps2u3sjwkgzjyrw67lmq",
+          "from": "k_rahfi6fkiwlmujm7ckinvufmw5snymlzotsxan7f4z7ztdmxmacq",
+          "ts": 1767225601022,
+          "re": "m_g4gzuphpxsslehbk6epjhnj3b36asofbw3ap3nyav72r2lc66z4q",
+          "window": false,
+          "hidden": true
+        },
+        {
+          "id": "m_ohwdsa7n2sa2jstm32a2rplsk4jubrs27hptqqr5eyutprortnea",
+          "channel": "c_qkygv7yvyh7mupjvyacle6tya4kwrqd3ps2u3sjwkgzjyrw67lmq",
+          "from": "k_u7qpm3wfvsb2x3xjef2nngicbybdhjuypti6vu2scbbxaxnworwq",
+          "ts": 1767225601023,
+          "re": "m_g4gzuphpxsslehbk6epjhnj3b36asofbw3ap3nyav72r2lc66z4q",
+          "window": false,
+          "hidden": true
+        },
+        {
+          "id": "m_vi7sd3centi52s5ww2zfa3pjlx4ox5kfbarkodbmplu3s5gmzz3a",
+          "channel": "c_qkygv7yvyh7mupjvyacle6tya4kwrqd3ps2u3sjwkgzjyrw67lmq",
+          "from": "k_ontmjya7xoligjvtugmf7iczimbvrqzkx4hsnyg7n447rofdkjza",
+          "ts": 1767225601024,
+          "re": "m_g4gzuphpxsslehbk6epjhnj3b36asofbw3ap3nyav72r2lc66z4q",
+          "window": false,
+          "banned": true
+        },
+        {
+          "id": "m_kljhscxas6guwu4j2ebrnfae436xtiutydpsmgekcyqd5qsrq76a",
+          "channel": "c_qkygv7yvyh7mupjvyacle6tya4kwrqd3ps2u3sjwkgzjyrw67lmq",
+          "from": "k_u7qpm3wfvsb2x3xjef2nngicbybdhjuypti6vu2scbbxaxnworwq",
+          "ts": 1767225601025,
+          "re": "m_kq22nyweuzmihne6cz3mdojdjzsad2iyreh774x6f7syaptludia",
+          "window": false,
+          "hidden": true
+        },
+        {
+          "id": "m_xamsk3fj7csdshk6lijducbihs34iwhzxjv7hwdfqayb7qg7ikcq",
+          "channel": "c_qkygv7yvyh7mupjvyacle6tya4kwrqd3ps2u3sjwkgzjyrw67lmq",
+          "from": "k_u7qpm3wfvsb2x3xjef2nngicbybdhjuypti6vu2scbbxaxnworwq",
+          "ts": 1767225601026,
+          "re": "m_kq22nyweuzmihne6cz3mdojdjzsad2iyreh774x6f7syaptludia",
+          "window": false,
+          "hidden": true
+        }
+      ],
+      "items": [
+        {
+          "id": "m_g4gzuphpxsslehbk6epjhnj3b36asofbw3ap3nyav72r2lc66z4q",
+          "repliers": 2,
+          "replies": 2
+        },
+        {
+          "id": "m_kq22nyweuzmihne6cz3mdojdjzsad2iyreh774x6f7syaptludia",
+          "repliers": 0,
+          "replies": 0
+        }
+      ],
+      "omitted": 0
     }
   ]
 }

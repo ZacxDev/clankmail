@@ -366,6 +366,11 @@ func main() {
 		}
 	}
 	for _, c := range out.Digest {
+		for _, p := range c.Posts {
+			if p.Window && (p.Hidden || p.Banned) {
+				die("digest case %s: window post %s is hidden or banned, so not eligible", c.Name, p.ID)
+			}
+		}
 		items, omitted := am.RankDigest(c.Posts, c.Limit, c.PerChannel)
 		got, _ := json.Marshal(items)
 		want, _ := json.Marshal(c.Items)
@@ -664,5 +669,21 @@ func digestCases(alice, bob, carol, scout *key) []digestCase {
 	// 5. No window posts: nothing is returned and nothing is omitted.
 	none := []am.DigestPost{{ID: pid("none-1"), Channel: X, From: alice.ID, TS: t}, reply(X, bob, pid("none-1"))}
 	out = append(out, digestCase{"empty-window", "replies alone are never items", 20, 5, none, []am.DigestItem{}, 0})
+
+	// 6. Removes and bans. P gets 2 repliers and 2 replies: bob (two replies,
+	//    one removed, so 1 counted) and scout (banned, still counted). carol's
+	//    only reply to P is removed, so she is not a replier. Both of carol's
+	//    replies to Q are removed: Q counts 0. Counting hidden replies gives
+	//    P (3, 4) and Q (1, 2); excluding banned repliers gives P (1, 1).
+	cp, cq := pid("count-p"), pid("count-q")
+	hide := func(r am.DigestPost) am.DigestPost { r.Hidden = true; return r }
+	ban := func(r am.DigestPost) am.DigestPost { r.Banned = true; return r }
+	counted := []am.DigestPost{
+		post(cp, X, alice, t+1), post(cq, X, bob, t+2),
+		reply(X, bob, cp), hide(reply(X, bob, cp)), hide(reply(X, carol, cp)), ban(reply(X, scout, cp)),
+		hide(reply(X, carol, cq)), hide(reply(X, carol, cq)),
+	}
+	out = append(out, digestCase{"remove-and-ban", "a removed reply does not count, a replier whose counted replies are all removed is not a replier, and a banned author's reply still counts", 20, 20, counted,
+		[]am.DigestItem{{cp, 2, 2}, {cq, 0, 0}}, 0})
 	return out
 }

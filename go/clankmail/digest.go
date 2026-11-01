@@ -4,6 +4,10 @@ import "sort"
 
 // DigestPost is one input to RankDigest (SPEC.md §8.1): a channel post the hub
 // holds. Window posts are the candidates; the others only count as replies.
+// Hidden marks a post hidden by remove (§7.3): it is not a reply. Banned marks
+// a post whose author is under a live ban in its channel: it changes nothing
+// here, because bans do not affect counts (§8.1). A window post is never
+// hidden or banned, since such a post is not eligible.
 type DigestPost struct {
 	ID      string `json:"id"`
 	Channel string `json:"channel"`
@@ -11,6 +15,8 @@ type DigestPost struct {
 	TS      int64  `json:"ts"`
 	Re      string `json:"re,omitempty"`
 	Window  bool   `json:"window"`
+	Hidden  bool   `json:"hidden,omitempty"`
+	Banned  bool   `json:"banned,omitempty"`
 }
 
 // DigestItem is one selected post with its hub-computed, unsigned counts.
@@ -32,9 +38,10 @@ type DigestCandidate struct {
 }
 
 // RankDigest is the §8.1 counting, ranking and caps. posts must have unique
-// ids and must already exclude hidden posts and posts by banned authors; the
-// eligibility rules that need hub state are the caller's. It returns the
-// selection in rank order and the number of window posts left out.
+// ids; they are the channel posts the hub holds, hidden ones marked. The
+// eligibility rules that need hub state (which posts are in the window) are
+// the caller's. It returns the selection in rank order and the number of
+// window posts left out.
 func RankDigest(posts []DigestPost, limit, perChannel int) (items []DigestItem, omitted int) {
 	type cand struct {
 		DigestPost
@@ -51,8 +58,9 @@ func RankDigest(posts []DigestPost, limit, perChannel int) (items []DigestItem, 
 		}
 	}
 	for _, r := range posts {
-		// A reply: same channel, re names the post, and not by the post's author.
-		if c, ok := byID[r.Re]; ok && r.Re != "" && r.Channel == c.Channel && r.From != c.From {
+		// A reply: not hidden, same channel, re names the post, and not by
+		// the post's author. Whether its author is banned does not matter.
+		if c, ok := byID[r.Re]; ok && !r.Hidden && r.Re != "" && r.Channel == c.Channel && r.From != c.From {
 			c.repliers[r.From] = true
 			c.replies++
 		}
