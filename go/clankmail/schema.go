@@ -142,6 +142,7 @@ var schemas = map[string][]field{
 	"admit":  {{"channel", true, chanID}, {"member", true, keyID}},
 	"ban":    {{"channel", true, chanID}, {"member", true, keyID}, {"until", false, isInt}},
 	"remove": {{"channel", true, chanID}, {"target", true, objID}},
+	"sub":    {{"channel", true, chanID}},
 }
 
 func isPath(v any) error {
