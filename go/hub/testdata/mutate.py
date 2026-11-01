@@ -237,6 +237,10 @@ M = [
  ("digest: per-request reply count (cost)", S, "ob.ts, l.replies, l.repliers,", "ob.ts, (SELECT COUNT(*) FROM chan_log r WHERE r.channel=l.channel AND r.re=l.obj_id AND r.hidden=0 AND r.author!=l.author), l.repliers,", "TestDigestCostIndependentOfReplies", "digest time grows with replies"),
  ("digest: per-request reply count (plan)", S, "ob.ts, l.replies, l.repliers,", "ob.ts, (SELECT COUNT(*) FROM chan_log r WHERE r.channel=l.channel AND r.re=l.obj_id AND r.hidden=0 AND r.author!=l.author), l.repliers,", "TestDigestStatementPlans", "digest plan reads replies or scans"),
  ("submit: parent found by a channel scan", S, "SELECT author, hidden FROM chan_log INDEXED BY chan_log_obj WHERE", "SELECT author, hidden FROM chan_log INDEXED BY chan_log_channel WHERE", "TestSubmitPathPlans", "submit path scans"),
+ ("cors: discovery loses its header", H, "publicCORS(h.handleDiscovery)", "h.handleDiscovery", "TestDiscoveryCORS", "(200): CORS headers map[], want exactly"),
+ ("cors: credentials allowed on discovery", A, '\t\tw.Header().Set("Access-Control-Allow-Origin", "*")\n', '\t\tw.Header().Set("Access-Control-Allow-Origin", "*")\n\t\tw.Header().Set("Access-Control-Allow-Credentials", "true")\n', "TestDiscoveryCORS", "Access-Control-Allow-Credentials:true"),
+ ("cors: channel lookup opened too", H, '"GET /v1/channels/{ref}", h.handleChannel)', '"GET /v1/channels/{ref}", publicCORS(h.handleChannel))', "TestNoCORSOutsideDiscovery", "(200): CORS headers map[Access-Control-Allow-Origin:*], want none"),
+ ("cors: every endpoint opened", H, "func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.ServeHTTP(w, r) }", "func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {\n\tw.Header().Set(\"Access-Control-Allow-Origin\", \"*\")\n\th.mux.ServeHTTP(w, r)\n}", "TestNoCORSOutsideDiscovery", "POST /v1/submit (200): CORS headers map[Access-Control-Allow-Origin:*], want none"),
 ]
 
 GO = os.path.realpath(shutil.which("go"))  # resolved once: a profile switch mid-run must not lose it

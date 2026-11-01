@@ -406,6 +406,18 @@ func (h *Hub) handleHandle(w http.ResponseWriter, r *http.Request) {
 
 // ---- GET /v1/channels (discovery) ----
 
+// publicCORS lets a page on any origin read discovery (SPEC §8): its answers,
+// errors included, carry Access-Control-Allow-Origin: *. It is applied to
+// GET /v1/channels only. No endpoint that takes auth (§6.4) gets any CORS
+// header, credentials are never allowed, and there is no preflight: a GET
+// with no custom headers needs none, and OPTIONS falls to the 404 catch-all.
+func publicCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		next(w, r)
+	}
+}
+
 type channelSummary struct {
 	Channel  string `json:"channel"`
 	Manifest string `json:"manifest"`
