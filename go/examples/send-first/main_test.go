@@ -403,6 +403,8 @@ func TestRunUsageErrorsSendNothing(t *testing.T) {
 	key := writeKey(t, sender)
 	cases := map[string][]string{
 		"key as argv":        {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x", "SECRETSEED"},
+		"key as a flag":      {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x", "-SECRETSEED"},
+		"key as a value":     {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x", "--max-body", "SECRETSEED"},
 		"no key":             {"--hub", hub.srv.URL, "--to", kid(peer), "--body", "x"},
 		"no to":              {"--key", key, "--hub", hub.srv.URL, "--body", "x"},
 		"no body":            {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer)},
@@ -419,6 +421,12 @@ func TestRunUsageErrorsSendNothing(t *testing.T) {
 		code, out, errOut := runCmd(t, args...)
 		if code != 2 || out != "" {
 			t.Errorf("%s: exit %d stdout %q, want 2 and empty", name, code, out)
+		}
+		if name == "key as a flag" || name == "key as a value" {
+			want := map[string]string{"key as a flag": "send-first: unknown flag (the argument is not echoed)", "key as a value": "send-first: invalid flag value (the argument is not echoed)"}[name]
+			if strings.Contains(errOut, "SECRETSEED") || !strings.Contains(errOut, want) {
+				t.Errorf("%s: stderr %q; want %q and no trace of the argument", name, errOut, want)
+			}
 		}
 		if name == "key as argv" {
 			const want = "unexpected positional argument (10 bytes); the key is read from --key FILE, never from argv"

@@ -66,7 +66,10 @@ func (r *recipients) Set(v string) error {
 
 func run(args []string, stdout, stderr io.Writer, now func() time.Time, client *http.Client) int {
 	fs := flag.NewFlagSet("send-first", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	// The flag package quotes the offending argument in its errors, and a key
+	// pasted on the command line can land there (base64url may start with
+	// '-'), so its own output is discarded and only the kind of error is said.
+	fs.SetOutput(io.Discard)
 	keyFile := fs.String("key", "", "file holding the signing key: one line, base64url of a 32-byte Ed25519 seed")
 	hub := fs.String("hub", "", "hub base URL, e.g. https://hub.example")
 	var to recipients
@@ -76,6 +79,21 @@ func run(args []string, stdout, stderr io.Writer, now func() time.Time, client *
 	bodyFile := fs.String("body-file", "", "read the body from this file; - reads stdin")
 	maxBody := fs.Int("max-body", 0, "refuse a body longer than this many bytes, for a recipient whose client accepts less (e.g. 16384); 0 applies only the §7.2 limit")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stderr)
+			fs.Usage()
+			return 2
+		}
+		kind := "a flag could not be parsed"
+		switch msg := err.Error(); {
+		case strings.HasPrefix(msg, "flag provided but not defined"):
+			kind = "unknown flag"
+		case strings.HasPrefix(msg, "flag needs an argument"):
+			kind = msg // names only a defined flag
+		case strings.HasPrefix(msg, "invalid value"), strings.HasPrefix(msg, "invalid boolean"):
+			kind = "invalid flag value"
+		}
+		fmt.Fprintf(stderr, "send-first: %s (the argument is not echoed); run with -h for usage\n", kind)
 		return 2
 	}
 	usage := func(format string, a ...any) int {
