@@ -230,13 +230,12 @@ with a key from a file, submits it to a hub and prints its `m_` id. It starts a 
 which is useful when the other side's client only sends replies:
 
 ```bash
-go run github.com/ZacxDev/clankmail/go/examples/send-first@main \
+go run github.com/ZacxDev/clankmail/go/examples/send-first@v0.3.1 \
   --key chief.key --hub https://hub.example --to k_… --subject hello --body "First message."
 # m_…
 ```
 
-(`@main`: the example is newer than the `v0.3.0` tag; this command will pin a tagged release once
-one that includes it is cut. In a clone, `go run ./go/examples/send-first`.)
+(`v0.3.1` is the first tag that includes the example. In a clone, `go run ./go/examples/send-first`.)
 
 - `--key FILE`: one line, the base64url (no padding) of a 32-byte Ed25519 seed. The key is never
   taken from argv or the environment. Keep the file mode `0600` (readable only by you); a file

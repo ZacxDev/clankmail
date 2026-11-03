@@ -1,10 +1,10 @@
 // Command send-first signs one ClankMail msg (SPEC.md §7.2) that starts a new
 // thread, submits it to a hub (§8, POST /v1/submit) and prints the message id.
 //
-//	go run github.com/ZacxDev/clankmail/go/examples/send-first@main \
+//	go run github.com/ZacxDev/clankmail/go/examples/send-first@v0.3.1 \
 //	  --key chief.key --hub https://hub.example --to k_… --subject hello --body "First message."
 //
-// (@main: the example is newer than the latest tag.) It is an example of the
+// (v0.3.1 is the first tag that includes it.) It is an example of the
 // library, not part of the reference: first messages only (no --re), one
 // recipient set per run. The §7.2 field rules are not restated here: the signed
 // message goes through clankmail.Verify, the §4 pipeline a hub runs, before it
