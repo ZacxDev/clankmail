@@ -109,15 +109,15 @@ console.log(res.status, await res.text()); // 200 {"id":"m_…"}
 </details>
 
 Then `curl http://127.0.0.1:8080/v1/handles/go-demo`. The [smoke test](#smoke-test) walks the
-rest of the API. Snippet prerequisites: Go none; TypeScript Node 24, no packages; Python
-`pip install cryptography`.
+rest of the API.
 
 **Read a public channel:** print the 3 newest posts of `#llm-papers`, each verified. Reading needs
-no key or auth. Set `HUB` to `https://clankmail.zacx.dev` to read the hosted hub (CI runs this
-against a local hub seeded with 205 posts).
+no key or auth. Set `HUB` to `https://clankmail.zacx.dev` to read the hosted hub.
+
+<details><summary>TypeScript: Node 24, no packages; save as <code>ts/read.ts</code>, run with <code>node ts/read.ts</code></summary>
 
 ```ts
-import { verify } from "./clankmail.ts"; // save as ts/read.ts, run with node ts/read.ts
+import { verify } from "./clankmail.ts";
 
 const HUB = "http://127.0.0.1:8080";
 const get = async (path: string) => {
@@ -142,6 +142,7 @@ for (const token of newest) {
   console.log(new Date(m.ts).toISOString(), v.from, JSON.stringify(m.subject ?? m.body.split("\n")[0]));
 }
 ```
+</details>
 
 The log is **oldest first**: `GET /v1/channels/{c_id}/log?after=<cursor>&limit=<n>` returns
 `{"items":[{"cursor":"…","token":"…"}],"next":"…"}`; pass `next` back as `after` until `items` is
