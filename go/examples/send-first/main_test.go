@@ -176,13 +176,17 @@ func TestReadKeyFile(t *testing.T) {
 // fakeHub answers /v1/submit like a conforming hub that accepts everything
 // that passes §4, and records what it received.
 type fakeHub struct {
-	srv    *httptest.Server
-	tokens []string
-	status int    // when non-zero, answer this status instead
-	answer string // and this body
+	srv      *httptest.Server
+	tokens   []string
+	status   int    // when non-zero, answer this status instead
+	answer   string // and this body
+	location string // and, when set, this Location header
 	// when non-zero, verify and answer this status with the message's real
 	// id, so a refusal is told apart only by its status
 	statusWithID int
+	// when non-zero, verify and answer 200 with this many bytes of padding
+	// before the message's real id
+	pad int
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -196,6 +200,9 @@ func newFakeHub(t *testing.T) *fakeHub {
 		b, _ := io.ReadAll(r.Body)
 		f.tokens = append(f.tokens, string(b))
 		if f.status != 0 {
+			if f.location != "" {
+				w.Header().Set("Location", f.location)
+			}
 			w.WriteHeader(f.status)
 			io.WriteString(w, f.answer)
 			return
@@ -204,6 +211,10 @@ func newFakeHub(t *testing.T) *fakeHub {
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.(*clankmail.Error).Code, "detail": err.Error()})
+			return
+		}
+		if f.pad != 0 {
+			json.NewEncoder(w).Encode(map[string]string{"a_pad": strings.Repeat("x", f.pad), "id": obj.ID})
 			return
 		}
 		if f.statusWithID != 0 {
@@ -260,8 +271,8 @@ func TestRunBodyFile(t *testing.T) {
 	}
 }
 
-// Every non-2xx answer, a redirect, a 2xx without the message's id and an
-// unreachable hub exit 1 with nothing on stdout.
+// Every non-2xx answer, a 2xx without the message's id and an unreachable hub
+// exit 1 with nothing on stdout. Redirects: TestRunRedirectNotFollowed.
 func TestRunHubRefusalExitsNonZero(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -273,7 +284,6 @@ func TestRunHubRefusalExitsNonZero(t *testing.T) {
 		{"E_FORBIDDEN", 403, `{"error":"E_FORBIDDEN","detail":"no"}`, `403 Forbidden "E_FORBIDDEN"`},
 		{"E_RATE", 429, `{"error":"E_RATE","detail":"slow down"}`, "429"},
 		{"500 not JSON", 500, `oops`, "500 Internal Server Error"},
-		{"redirect", 302, ``, "302 Found"},
 		{"200 wrong id", 200, `{"id":"m_` + strings.Repeat("a", 52) + `"}`, "the message's id is"},
 		{"200 no id", 200, `{}`, "without an m_ id"},
 		{"201 not JSON", 201, `ok`, "without an m_ id"},
@@ -308,6 +318,85 @@ func TestRunHubRefusalExitsNonZero(t *testing.T) {
 	}
 }
 
+// A redirect is not an answer from the hub. The origin redirects to a second
+// hub that would accept the message; the program must not follow it. 307 and
+// 308 keep the POST and its body, so a followed redirect would deliver the
+// message to the target and exit 0; 302 turns it into a GET.
+func TestRunRedirectNotFollowed(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		want   string
+	}{
+		{307, "307 Temporary Redirect"},
+		{308, "308 Permanent Redirect"},
+		{302, "302 Found"},
+	} {
+		target := newFakeHub(t)
+		origin := newFakeHub(t)
+		origin.status, origin.location = c.status, target.srv.URL+"/v1/submit"
+		code, out, errOut := runCmd(t, "--key", writeKey(t, sender), "--hub", origin.srv.URL,
+			"--to", kid(peer), "--body", "x")
+		if code != 1 || out != "" || !strings.Contains(errOut, c.want) {
+			t.Errorf("%d to an accepting hub: exit %d stdout %q stderr %q; want exit 1, empty stdout, stderr containing %q",
+				c.status, code, out, errOut, c.want)
+		}
+		if len(origin.tokens) != 1 || len(target.tokens) != 0 {
+			t.Errorf("%d to an accepting hub: origin received %d submissions, target %d; want 1 and 0",
+				c.status, len(origin.tokens), len(target.tokens))
+		}
+	}
+}
+
+// Only the first 64 KiB of a hub answer is read: a 2xx whose id comes after
+// the cap is an answer without an id.
+func TestRunResponseCap(t *testing.T) {
+	for _, c := range []struct {
+		pad  int
+		code int
+	}{
+		{1000, 0},        // well under the cap: accepted
+		{maxResponse, 1}, // the id starts past the cap
+	} {
+		hub := newFakeHub(t)
+		hub.pad = c.pad
+		code, out, errOut := runCmd(t, "--key", writeKey(t, sender), "--hub", hub.srv.URL,
+			"--to", kid(peer), "--body", "x")
+		if code != c.code {
+			t.Errorf("200 with %d bytes of padding before the id: exit %d stdout %q stderr %q, want %d",
+				c.pad, code, out, errOut, c.code)
+		}
+		if c.code == 1 && (out != "" || !strings.Contains(errOut, "200 OK without an m_ id")) {
+			t.Errorf("past the cap: stdout %q stderr %q, want empty stdout and %q", out, errOut, "200 OK without an m_ id")
+		}
+	}
+}
+
+// A key file longer than the cap is refused before it is parsed, without
+// repeating its contents, and nothing is sent.
+func TestRunOversizedKeyFile(t *testing.T) {
+	hub := newFakeHub(t)
+	seed := base64.RawURLEncoding.EncodeToString(sender.Seed())
+	for _, n := range []int{maxKeyFile + 1, 1 << 20} {
+		p := filepath.Join(t.TempDir(), "big.key")
+		text := seed + "\n" + "KEYMARKER" + strings.Repeat("A", n-len(seed)-1-len("KEYMARKER"))
+		if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, out, errOut := runCmd(t, "--key", p, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x")
+		want := "the key file is longer than 128 bytes"
+		if code != 2 || out != "" || !strings.Contains(errOut, want) {
+			t.Errorf("%d-byte key file: exit %d stdout %q stderr %q; want exit 2, empty stdout, stderr containing %q",
+				n, code, out, errOut, want)
+		}
+		if strings.Contains(errOut, "KEYMARKER") || strings.Contains(errOut, seed) {
+			t.Errorf("%d-byte key file: stderr repeats the file: %q", n, errOut)
+		}
+	}
+	if len(hub.tokens) != 0 {
+		t.Fatalf("an oversized key file sent %d submissions", len(hub.tokens))
+	}
+}
+
 // Input errors exit 2 and send nothing.
 func TestRunUsageErrorsSendNothing(t *testing.T) {
 	hub := newFakeHub(t)
@@ -327,9 +416,15 @@ func TestRunUsageErrorsSendNothing(t *testing.T) {
 		"token too large": {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", strings.Repeat("\x00", 20000)},
 	}
 	for name, args := range cases {
-		code, out, _ := runCmd(t, args...)
+		code, out, errOut := runCmd(t, args...)
 		if code != 2 || out != "" {
 			t.Errorf("%s: exit %d stdout %q, want 2 and empty", name, code, out)
+		}
+		if name == "key as argv" {
+			const want = "unexpected positional argument (10 bytes); the key is read from --key FILE, never from argv"
+			if strings.Contains(errOut, "SECRETSEED") || !strings.Contains(errOut, want) {
+				t.Errorf("key as argv: stderr %q; want %q and no trace of the argument", errOut, want)
+			}
 		}
 	}
 	if len(hub.tokens) != 0 {

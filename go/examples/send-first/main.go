@@ -9,9 +9,10 @@
 // recipient set per run. The §7.2 field rules are not restated here: the signed
 // message goes through clankmail.Verify, the §4 pipeline a hub runs, before it
 // is sent. The signing key is read from a file, never from argv or the
-// environment. Exit status: 0 and the m_ id on stdout when the hub answers 2xx;
-// 1 when the hub refuses the message or cannot be reached; 2 for a usage or
-// input error, including a message Verify refuses (nothing is sent).
+// environment. Exit status: 0 and the m_ id on stdout only when the hub answers
+// 2xx with that message's id; 1 when the hub refuses the message, answers
+// without that id, redirects or cannot be reached; 2 for a usage or input
+// error, including a message Verify refuses (nothing is sent).
 package main
 
 import (
@@ -35,6 +36,10 @@ import (
 
 // maxResponse bounds how much of a hub answer is read.
 const maxResponse = 64 << 10
+
+// maxKeyFile bounds how much of the key file is read. A key line is 43 bytes
+// plus an optional newline; a longer file is refused, not cut.
+const maxKeyFile = 128
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, time.Now, defaultClient()))
@@ -78,7 +83,9 @@ func run(args []string, stdout, stderr io.Writer, now func() time.Time, client *
 		return 2
 	}
 	if fs.NArg() != 0 {
-		return usage("unexpected argument %q (the key is read from --key FILE, never from argv)", fs.Arg(0))
+		// The value is not echoed: a key pasted on the command line most likely
+		// ends up here.
+		return usage("unexpected positional argument (%d bytes); the key is read from --key FILE, never from argv", len(fs.Arg(0)))
 	}
 	if *keyFile == "" || *hub == "" || len(to) == 0 {
 		return usage("--key, --hub and --to are required")
@@ -162,11 +169,20 @@ func submitEndpoint(hub string) (string, error) {
 // ReadKeyFile reads a ClankMail key file: one line holding the base64url (no
 // padding) of a 32-byte Ed25519 seed, optionally followed by a newline. The
 // decoding is canonical (SPEC.md §2), so padding, spaces or a second line are
-// refused rather than ignored.
+// refused rather than ignored. At most maxKeyFile bytes are read, and a longer
+// file is refused. No error repeats the file's contents.
 func ReadKeyFile(path string) (ed25519.PrivateKey, error) {
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, errors.New("cannot read the key file")
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxKeyFile+1))
+	if err != nil {
+		return nil, errors.New("cannot read the key file")
+	}
+	if len(b) > maxKeyFile {
+		return nil, fmt.Errorf("the key file is longer than %d bytes; not a ClankMail key file", maxKeyFile)
 	}
 	text := strings.TrimSuffix(string(b), "\n")
 	seed, err := base64.RawURLEncoding.DecodeString(text)

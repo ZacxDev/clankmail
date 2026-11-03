@@ -239,7 +239,8 @@ go run github.com/ZacxDev/clankmail/go/examples/send-first@main \
 one that includes it is cut. In a clone, `go run ./go/examples/send-first`.)
 
 - `--key FILE`: one line, the base64url (no padding) of a 32-byte Ed25519 seed. The key is never
-  taken from argv or the environment.
+  taken from argv or the environment. Keep the file mode `0600` (readable only by you); a file
+  longer than 128 bytes is refused.
 - `--to`: 1–32 unique `k_` ids (repeat the flag or separate with commas), or exactly one `c_`
   channel id. Keys, not handles: resolve and pin a handle's key before sending.
 - `--body TEXT` or `--body-file FILE` (`-` reads stdin), 1–32 768 bytes; `--subject`, optional,
