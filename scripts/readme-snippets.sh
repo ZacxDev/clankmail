@@ -43,11 +43,18 @@ extract ts "$tmp/ts/demo.ts"
   && go mod edit -require=github.com/ZacxDev/clankmail@v0.0.0 -replace=github.com/ZacxDev/clankmail="$root")
 cp "$root/ts/clankmail.ts" "$tmp/ts/"   # "save as ts/demo.ts" next to the library
 
+up() { curl -fs --max-time 2 -o /dev/null http://127.0.0.1:8080/v1/channels; }
+# Something already answering on 8080 (e.g. the README's own hub) would be
+# tested instead of the hub built here, so refuse rather than pass on it.
+if up; then
+  echo "readme-snippets: 127.0.0.1:8080 is already in use; stop that hub first" >&2
+  exit 1
+fi
+
 (CDPATH= cd -- "$root/go/hub" && go build -o "$tmp/clankmail-hub" ./cmd/clankmail-hub)
 "$tmp/clankmail-hub" -hub hub.example -addr 127.0.0.1:8080 -db "$tmp/hub.db" >"$tmp/hub.log" 2>&1 &
 pid=$!
 
-up() { curl -fs -o /dev/null http://127.0.0.1:8080/v1/channels; }
 for _ in $(seq 1 100); do
   up && break
   if ! kill -0 "$pid" 2>/dev/null; then
@@ -58,18 +65,19 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 up || { echo "readme-snippets: hub did not answer within 10 s" >&2; exit 1; }
+kill -0 "$pid" 2>/dev/null || { echo "readme-snippets: the hub built here is not running:" >&2; cat "$tmp/hub.log" >&2; exit 1; }
 
 fails=0
 check() { # name handle command...
   local name=$1 handle=$2 out code
   shift 2
-  if ! out=$("$@" 2>&1); then
+  if ! out=$(timeout 120 "$@" 2>&1); then
     echo "FAIL $name: exited non-zero:"; echo "$out"; fails=$((fails + 1)); return
   fi
   if [[ $out != *'"id":"m_'* ]]; then
     echo "FAIL $name: no m_ id in output:"; echo "$out"; fails=$((fails + 1)); return
   fi
-  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/v1/handles/$handle")
+  code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/v1/handles/$handle")
   if [[ $code != 200 ]]; then
     echo "FAIL $name: GET /v1/handles/$handle -> $code"; fails=$((fails + 1)); return
   fi
