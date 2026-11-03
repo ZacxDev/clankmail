@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"encoding/base64"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,59 +29,37 @@ func buildSendFirst(t *testing.T) string {
 	return bin
 }
 
-// The example program against this hub, end to end: a first message from
-// alice is accepted, its printed id is the stored object, and it lands in
-// bob's requests queue (alice is not on bob's allow list, and it has no re).
-// A hub refusal exits 1.
+// The example program against this hub: the seam between the two. A first
+// message from alice is accepted (exit 0) and the id it prints names the
+// signed message the hub stored. Queue placement and hub refusals are covered
+// by this package's own tests and by the program's fake-hub tests.
 func TestExampleSendFirstAgainstHub(t *testing.T) {
 	bin := buildSendFirst(t)
 	// The program signs with the wall clock, so the hub's clock (frozen, and
-	// shared with the auth tokens e.queue signs) is set to it.
+	// shared with the auth tokens e.as signs) is set to it.
 	e := newEnv(t)
 	e.now.Store(time.Now().UnixMilli())
 	keyFile := filepath.Join(t.TempDir(), "alice.key")
 	if err := os.WriteFile(keyFile, []byte(base64.RawURLEncoding.EncodeToString(alice.Seed())+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	send := func(hubURL string) (int, string, string) {
-		var o, er bytes.Buffer
-		cmd := exec.Command(bin, "--key", keyFile, "--hub", hubURL, "--to", kid(bob),
-			"--subject", "hello", "--body", "First message.")
-		cmd.Stdout, cmd.Stderr = &o, &er
-		err := cmd.Run()
-		var ee *exec.ExitError
-		switch {
-		case err == nil:
-			return 0, o.String(), er.String()
-		case errors.As(err, &ee):
-			return ee.ExitCode(), o.String(), er.String()
-		}
-		t.Fatal(err)
-		return 0, "", ""
+	var o, er bytes.Buffer
+	cmd := exec.Command(bin, "--key", keyFile, "--hub", e.srv.URL, "--to", kid(bob),
+		"--subject", "hello", "--body", "First message.")
+	cmd.Stdout, cmd.Stderr = &o, &er
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("send-first: %v: %s", err, er.String())
 	}
-
-	code, out, errOut := send(e.srv.URL)
-	if code != 0 {
-		t.Fatalf("send-first exit %d: %s", code, errOut)
+	id := strings.TrimSpace(o.String())
+	r := e.as(bob, "GET", "/v1/objects/"+id, nil)
+	if r.status != 200 {
+		t.Fatalf("GET the printed id %q: status %d %v", id, r.status, r.body)
 	}
-	id := strings.TrimSpace(out)
-	reqs := e.queue(bob, "requests")
-	if len(reqs) != 1 || idOf(t, reqs[0]) != id {
-		t.Fatalf("bob requests %v, want the one message %s", reqs, id)
+	obj, err := clankmail.Verify(r.str("token"))
+	if err != nil {
+		t.Fatalf("stored token: %v", err)
 	}
-	obj, _ := clankmail.Verify(reqs[0])
-	if obj.From != kid(alice) || obj.Fields["body"] != "First message." || obj.Fields["subject"] != "hello" {
-		t.Fatalf("stored fields: %v", obj.Fields)
-	}
-	if got := e.queue(bob, "inbox"); len(got) != 0 {
-		t.Fatalf("a first message from a sender bob never allowed reached his inbox: %v", got)
-	}
-
-	// A hub whose clock is 10 minutes ahead refuses the message as stale.
-	skewed := newEnv(t)
-	skewed.now.Store(time.Now().Add(10 * time.Minute).UnixMilli())
-	code, out, errOut = send(skewed.srv.URL)
-	if code != 1 || out != "" || !strings.Contains(errOut, `"E_STALE"`) {
-		t.Fatalf("stale: exit %d stdout %q stderr %q; want 1, empty, E_STALE", code, out, errOut)
+	if obj.ID != id || obj.From != kid(alice) || obj.Fields["body"] != "First message." || obj.Fields["subject"] != "hello" {
+		t.Fatalf("printed id %s; stored object %s from %s, fields %v", id, obj.ID, obj.From, obj.Fields)
 	}
 }

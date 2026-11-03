@@ -55,7 +55,7 @@ func writeKey(t *testing.T, priv ed25519.PrivateKey) string {
 
 func TestBuildMsgFieldsAndSignature(t *testing.T) {
 	to := []string{kid(peer), kid(other)}
-	payload, err := BuildMsg(sender, to, "hello <&>", "First message.\nline two é", ts, MaxBody)
+	payload, err := BuildMsg(sender, to, "hello <&>", "First message.\nline two é", ts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestBuildMsgFieldsAndSignature(t *testing.T) {
 }
 
 func TestBuildMsgOmitsEmptySubject(t *testing.T) {
-	payload, err := BuildMsg(sender, []string{kid(peer)}, "", "hi", ts, MaxBody)
+	payload, err := BuildMsg(sender, []string{kid(peer)}, "", "hi", ts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,29 +101,31 @@ func TestBuildMsgOmitsEmptySubject(t *testing.T) {
 	}
 }
 
-func TestBuildMsgLimits(t *testing.T) {
-	keys := func(n int) []string {
-		var out []string
-		for i := 0; i < n; i++ {
-			out = append(out, kid(testKey(strings.Repeat("r", i+1))))
-		}
-		return out
+// keys returns n distinct k_ ids.
+func keys(n int) []string {
+	var out []string
+	for i := 0; i < n; i++ {
+		out = append(out, kid(testKey(strings.Repeat("r", i+1))))
 	}
+	return out
+}
+
+// Inputs at the §7.2 limits build into a message that verifies: the builder's
+// encoding does not push a legal message over a limit.
+func TestBuildMsgAtSpecLimitsVerifies(t *testing.T) {
 	one := []string{kid(peer)}
-	ok := []struct {
+	for _, c := range []struct {
 		name          string
 		to            []string
 		subject, body string
-		max           int
 	}{
-		{"body at 32768", one, "", strings.Repeat("a", 32768), MaxBody},
-		{"subject at 200", one, strings.Repeat("s", 200), "b", MaxBody},
-		{"32 key recipients", keys(32), "", "b", MaxBody},
-		{"one channel", []string{cid("chan")}, "", "b", MaxBody},
-		{"body at a 16384 limit, in bytes", one, "", strings.Repeat("é", 8192), 16384},
-	}
-	for _, c := range ok {
-		p, err := BuildMsg(sender, c.to, c.subject, c.body, ts, c.max)
+		{"body at 32768", one, "", strings.Repeat("a", 32768)},
+		{"body at 32768, in bytes", one, "", strings.Repeat("é", 16384)},
+		{"subject at 200", one, strings.Repeat("s", 200), "b"},
+		{"32 key recipients", keys(32), "", "b"},
+		{"one channel", []string{cid("chan")}, "", "b"},
+	} {
+		p, err := BuildMsg(sender, c.to, c.subject, c.body, ts)
 		if err != nil {
 			t.Errorf("%s: refused: %v", c.name, err)
 			continue
@@ -132,32 +134,18 @@ func TestBuildMsgLimits(t *testing.T) {
 			t.Errorf("%s: built but does not verify: %v", c.name, err)
 		}
 	}
-	bad := []struct {
-		name          string
-		to            []string
-		subject, body string
-		max           int
-		want          string
-	}{
-		{"empty body", one, "", "", MaxBody, "body is 0 bytes"},
-		{"body at 32769", one, "", strings.Repeat("a", 32769), MaxBody, "body is 32769 bytes"},
-		{"body over a 16384 limit, in bytes", one, "", strings.Repeat("é", 8193), 16384, "body is 16386 bytes; it must be 1-16384"},
-		{"subject at 201", one, strings.Repeat("s", 201), "b", MaxBody, "subject is 201 bytes"},
-		{"33 key recipients", keys(33), "", "b", MaxBody, "33 key recipients"},
-		{"no recipients", nil, "", "b", MaxBody, "at least one recipient"},
-		{"duplicate key", []string{kid(peer), kid(peer)}, "", "b", MaxBody, "listed twice"},
-		{"channel plus key", []string{cid("chan"), kid(peer)}, "", "b", MaxBody, "only recipient"},
-		{"key then channel", []string{kid(peer), cid("chan")}, "", "b", MaxBody, "is not a k_ key id"},
-		{"uppercase key", []string{"k_" + strings.ToUpper(kid(peer)[2:])}, "", "b", MaxBody, "is not a k_ key id"},
-		{"short key", []string{kid(peer)[:50]}, "", "b", MaxBody, "is not a k_ key id"},
-		{"handle, not key", []string{"@owner/chief"}, "", "b", MaxBody, "is not a k_ key id"},
-		{"bad channel", []string{"c_abc"}, "", "b", MaxBody, "is not a c_ channel id"},
-		{"invalid UTF-8", one, "", "a\xffb", MaxBody, "valid UTF-8"},
-	}
-	for _, c := range bad {
-		_, err := BuildMsg(sender, c.to, c.subject, c.body, ts, c.max)
-		if err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s: want error containing %q, got %v", c.name, c.want, err)
+}
+
+// Go's json encoder would replace invalid UTF-8 with U+FFFD and sign text the
+// caller never wrote, so BuildMsg refuses it before encoding.
+func TestBuildMsgRefusesInvalidUTF8(t *testing.T) {
+	for name, c := range map[string][2]string{
+		"body":    {"", "a\xffb"},
+		"subject": {"s\xc3", "b"},
+	} {
+		_, err := BuildMsg(sender, []string{kid(peer)}, c[0], c[1], ts)
+		if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+			t.Errorf("invalid UTF-8 %s: want error containing %q, got %v", name, "valid UTF-8", err)
 		}
 	}
 }
@@ -325,15 +313,15 @@ func TestRunUsageErrorsSendNothing(t *testing.T) {
 	hub := newFakeHub(t)
 	key := writeKey(t, sender)
 	cases := map[string][]string{
-		"key as argv":         {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x", "SECRETSEED"},
-		"no key":              {"--hub", hub.srv.URL, "--to", kid(peer), "--body", "x"},
-		"no to":               {"--key", key, "--hub", hub.srv.URL, "--body", "x"},
-		"no body":             {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer)},
-		"both bodies":         {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x", "--body-file", key},
-		"bad hub":             {"--key", key, "--hub", "ftp://h.example", "--to", kid(peer), "--body", "x"},
-		"over max-body":       {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--max-body", "16384", "--body", strings.Repeat("a", 16385)},
-		"max-body above spec": {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--max-body", "32769", "--body", "x"},
-		"bad key file":        {"--key", hub.srv.URL, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x"},
+		"key as argv":        {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x", "SECRETSEED"},
+		"no key":             {"--hub", hub.srv.URL, "--to", kid(peer), "--body", "x"},
+		"no to":              {"--key", key, "--hub", hub.srv.URL, "--body", "x"},
+		"no body":            {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer)},
+		"both bodies":        {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x", "--body-file", key},
+		"bad hub":            {"--key", key, "--hub", "ftp://h.example", "--to", kid(peer), "--body", "x"},
+		"negative max-body":  {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--max-body", "-1", "--body", "x"},
+		"invalid UTF-8 body": {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "a\xffb"},
+		"bad key file":       {"--key", hub.srv.URL, "--hub", hub.srv.URL, "--to", kid(peer), "--body", "x"},
 		// 20000 NULs escape to 120000 JSON bytes: under the body limit, over
 		// the §4 98304-byte token limit, caught by the Verify gate.
 		"token too large": {"--key", key, "--hub", hub.srv.URL, "--to", kid(peer), "--body", strings.Repeat("\x00", 20000)},
@@ -346,5 +334,58 @@ func TestRunUsageErrorsSendNothing(t *testing.T) {
 	}
 	if len(hub.tokens) != 0 {
 		t.Fatalf("usage errors sent %d submissions", len(hub.tokens))
+	}
+}
+
+// --max-body is a stricter limit the caller chooses, counted in bytes.
+func TestRunMaxBody(t *testing.T) {
+	hub := newFakeHub(t)
+	key := writeKey(t, sender)
+	code, _, errOut := runCmd(t, "--key", key, "--hub", hub.srv.URL, "--to", kid(peer),
+		"--max-body", "16384", "--body", strings.Repeat("é", 8192))
+	if code != 0 || len(hub.tokens) != 1 {
+		t.Fatalf("body at a 16384 limit: exit %d, %d submissions, stderr %q", code, len(hub.tokens), errOut)
+	}
+	code, _, errOut = runCmd(t, "--key", key, "--hub", hub.srv.URL, "--to", kid(peer),
+		"--max-body", "16384", "--body", strings.Repeat("é", 8193))
+	if want := "body is 16386 bytes; --max-body is 16384"; code != 2 || !strings.Contains(errOut, want) {
+		t.Fatalf("body over a 16384 limit: exit %d stderr %q, want 2 and %q", code, errOut, want)
+	}
+	if len(hub.tokens) != 1 {
+		t.Fatalf("the refused body was sent: %d submissions", len(hub.tokens))
+	}
+}
+
+// A message that breaks a §7.2 field rule is refused by the post-sign Verify
+// gate: exit 2, the reason from Verify on stderr, and no request to the hub.
+func TestRunSchemaInvalidRefusedBeforeSend(t *testing.T) {
+	key := writeKey(t, sender)
+	empty := filepath.Join(t.TempDir(), "empty.txt")
+	os.WriteFile(empty, nil, 0o600)
+	const gate = "the signed message does not verify: E_SCHEMA: "
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"33 key recipients", []string{"--to", strings.Join(keys(33), ","), "--body", "b"}, "to: want array of 1–32 items"},
+		{"duplicate key", []string{"--to", kid(peer), "--to", kid(peer), "--body", "b"}, "to: duplicate array item"},
+		{"channel plus key", []string{"--to", cid("chan") + "," + kid(peer), "--body", "b"}, "to: want k_ id"},
+		{"handle, not key", []string{"--to", "@owner/chief", "--body", "b"}, "to: want k_ id"},
+		{"empty body", []string{"--to", kid(peer), "--body-file", empty}, "body: want string of 1–32768 bytes"},
+		{"body at 32769", []string{"--to", kid(peer), "--body", strings.Repeat("a", 32769)}, "body: want string of 1–32768 bytes"},
+		{"body at 32770, in bytes", []string{"--to", kid(peer), "--body", strings.Repeat("é", 16385)}, "body: want string of 1–32768 bytes"},
+		{"subject at 201", []string{"--to", kid(peer), "--subject", strings.Repeat("s", 201), "--body", "b"}, "subject: want string of 1–200 bytes"},
+	}
+	for _, c := range cases {
+		hub := newFakeHub(t)
+		code, out, errOut := runCmd(t, append([]string{"--key", key, "--hub", hub.srv.URL}, c.args...)...)
+		if code != 2 || out != "" || !strings.Contains(errOut, gate+c.want) {
+			t.Errorf("%s: exit %d stdout %q stderr %q; want exit 2, empty stdout, stderr containing %q",
+				c.name, code, out, errOut, gate+c.want)
+		}
+		if len(hub.tokens) != 0 {
+			t.Errorf("%s: hub received %d requests, want 0", c.name, len(hub.tokens))
+		}
 	}
 }

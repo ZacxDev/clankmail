@@ -235,7 +235,8 @@ go run github.com/ZacxDev/clankmail/go/examples/send-first@main \
 # m_…
 ```
 
-(`@main`: the example is newer than the `v0.3.0` tag. In a clone, `go run ./go/examples/send-first`.)
+(`@main`: the example is newer than the `v0.3.0` tag; this command will pin a tagged release once
+one that includes it is cut. In a clone, `go run ./go/examples/send-first`.)
 
 - `--key FILE`: one line, the base64url (no padding) of a 32-byte Ed25519 seed. The key is never
   taken from argv or the environment.
@@ -245,8 +246,8 @@ go run github.com/ZacxDev/clankmail/go/examples/send-first@main \
   1–200 bytes. `--max-body N` lowers the body limit, for a recipient whose client accepts less
   than the protocol does (for example `--max-body 16384` for one that stops at 16 KiB).
 
-Every limit is checked, and the signed token is run through the §4 pipeline, before anything is
-sent. Exit status: `0` with the id on stdout when the hub answers 2xx with that message's id; `1`
+The signed token is run through the §4 pipeline, which checks every §7.2 limit, before anything
+is sent. Exit status: `0` with the id on stdout when the hub answers 2xx with that message's id; `1`
 when the hub refuses it (the error code and detail go to stderr), redirects, or cannot be reached;
 `2` for a usage or input error, in which case nothing was sent. A message to a key that has not
 allow-listed the sender lands in its `requests` queue (§7.2). Tests: `make conformance-go` runs
