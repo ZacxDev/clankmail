@@ -5,8 +5,9 @@
 # 0, print an m_ id, and leave its handle resolvable. Then the read-a-channel
 # snippet (the second ```ts block) runs against a #llm-papers channel that
 # scripts/readme-seed.ts fills with 205 posts, and must print exactly the 3
-# newest. The Go snippet builds against this checkout (a replace), not the
-# published module.
+# newest, control characters escaped; run again under scripts/tamper.mjs, it
+# must refuse a forged signature and a post from another channel. The Go
+# snippet builds against this checkout (a replace), not the published module.
 # Needs Go, Node 24 and Python 3 with `cryptography`.
 set -euo pipefail
 
@@ -94,20 +95,39 @@ check python py-demo env PYTHONPATH="$root/python" "$PYTHON" "$tmp/demo.py"
 check ts ts-demo "$NODE" --no-warnings "$tmp/ts/demo.ts"
 
 # Read-a-channel: seed after the write snippets, then the output must be the 3
-# newest posts, oldest of them first, each line "<ISO time> <k_ author> <text>".
+# newest posts, oldest of them first, each line "<ISO time> <k_ author> <text>",
+# with post 204's NEL and right-to-left override printed as \u escapes.
 if ! seed_out=$(timeout 120 "$NODE" --no-warnings "$root/scripts/readme-seed.ts" http://127.0.0.1:8080 2>&1); then
   echo "FAIL read: seeding failed:"; echo "$seed_out"; fails=$((fails + 1))
-elif ! out=$(timeout 120 "$NODE" --no-warnings "$tmp/ts/read.ts" 2>&1); then
-  echo "FAIL read: exited non-zero:"; echo "$out"; fails=$((fails + 1))
 else
-  got=$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z k_[a-z2-7]{52} //' <<<"$out")
-  want=$'"seed post 203"\n"seed post 204"\n"seed post 205"'
-  if [[ $got != "$want" ]]; then
-    echo "FAIL read: want the 3 newest posts as \"<time> <k_ author> <text>\" lines, got:"; echo "$out"
+  stray=$(tail -n 1 <<<"$seed_out") # a valid post to #other-papers
+  if ! out=$(timeout 120 "$NODE" --no-warnings "$tmp/ts/read.ts" 2>&1); then
+    echo "FAIL read: exited non-zero:"; echo "$out"; fails=$((fails + 1))
+  elif LC_ALL=C command grep -qP '\x7f|\xc2[\x80-\x9f]|\xe2\x80[\xa8-\xae]|\xe2\x81[\xa6-\xa9]' <<<"$out"; then
+    echo "FAIL read: raw DEL, C1, line-separator or bidi control in the output:"; echo "$out"
     fails=$((fails + 1))
   else
-    echo "ok read"
+    got=$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z k_[a-z2-7]{52} //' <<<"$out")
+    want='"seed post 203"'$'\n''"seed post 204\u0085\u202eevil"'$'\n''"seed post 205"'
+    if [[ $got != "$want" ]]; then
+      echo "FAIL read: want the 3 newest posts as \"<time> <k_ author> <text>\" lines, got:"; echo "$out"
+      fails=$((fails + 1))
+    else
+      echo "ok read"
+    fi
   fi
+  # A hostile hub (scripts/tamper.mjs rewrites the last log item): the reader
+  # must exit non-zero with the given error rather than print the post.
+  for mode in "sig:E_SIGNATURE" "swap:not a post in this channel"; do
+    if o=$(TAMPER=${mode%%:*} TAMPER_TOKEN=$stray timeout 120 "$NODE" --no-warnings \
+      --import "$root/scripts/tamper.mjs" "$tmp/ts/read.ts" 2>&1); then
+      echo "FAIL read-${mode%%:*}: exited 0 on a tampered log:"; echo "$o"; fails=$((fails + 1))
+    elif [[ $o != *"${mode#*:}"* ]]; then
+      echo "FAIL read-${mode%%:*}: want \"${mode#*:}\" in the output, got:"; echo "$o"; fails=$((fails + 1))
+    else
+      echo "ok read-${mode%%:*}"
+    fi
+  done
 fi
 
 if (( fails )); then

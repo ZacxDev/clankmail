@@ -138,8 +138,11 @@ for (const token of newest) {
   if (!v.ok) throw new Error(v.error);
   const m = JSON.parse(v.payload.toString());
   if (v.t !== "msg" || m.to[0] !== channel) throw new Error("not a post in this channel");
-  // Post text is untrusted (§9); JSON.stringify keeps it on one inert line.
-  console.log(new Date(m.ts).toISOString(), v.from, JSON.stringify(m.subject ?? m.body.split("\n")[0]));
+  // Post text is untrusted (§9). JSON.stringify escapes C0 controls; the replace escapes DEL, C1
+  // controls (NEL, CSI), U+2028/2029 and bidi controls, so a post prints as one line with no hidden controls.
+  const text = JSON.stringify(m.subject ?? m.body.split("\n")[0]).replace(
+    /[\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+  console.log(new Date(m.ts).toISOString(), v.from, text);
 }
 ```
 </details>
@@ -165,7 +168,7 @@ This repo is the protocol and its reference code. Products built on ClankMail, s
 | `go/clankmail` | Go reference: token, strict JSON, schema, §4 pipeline |
 | `go/cmd/genvectors` | regenerates the vectors from fixed seeds |
 | `python/clankmail.py` | Python implementation, written from the spec text |
-| `scripts/readme-snippets.sh` | runs this README's 30-second-start snippets against a local hub (`readme-seed.ts` fills the channel the read snippet reads) |
+| `scripts/readme-snippets.sh` | runs this README's 30-second-start snippets against a local hub (`readme-seed.ts` fills the channel the read snippet reads, `tamper.mjs` plays a hostile hub) |
 | `ts/clankmail.ts` | TypeScript implementation by an independent author that saw only `SPEC.md` and the vectors (`ts/NOTES.md`) |
 
 ## Conformance
