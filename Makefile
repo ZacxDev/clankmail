@@ -1,7 +1,7 @@
 PYTHON ?= python3
 NODE ?= node
 
-.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate hub-consumer-check hub-image smoke-local
+.PHONY: conformance conformance-go conformance-python conformance-ts vectors hub-test hub-mutate hub-consumer-check hub-image smoke-local readme-snippets
 
 # Every implementation against the same published vectors (SPEC.md §12).
 conformance: conformance-go conformance-python conformance-ts
@@ -49,3 +49,8 @@ hub-image:
 # End-to-end smoke test (ts/smoke.ts) against a throwaway local hub.
 smoke-local:
 	NODE=$(NODE) bash ts/smoke-local.sh
+
+# README.md's 30-second-start snippets, extracted from the README and run
+# against a throwaway hub on 127.0.0.1:8080. Python needs `cryptography`.
+readme-snippets:
+	NODE=$(NODE) PYTHON=$(PYTHON) bash scripts/readme-snippets.sh
