@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (reference package, vectors, hub)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go/hub/go.sum
+      - name: conformance-go
+        run: make conformance-go
+      - name: vectors are reproducible
+        run: |
+          make vectors
+          git diff --exit-code -- vectors/
+      - name: hub-test
+        run: make hub-test
+      - name: hub-consumer-check
+        run: make hub-consumer-check
+
+  python:
+    name: Python conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install cryptography
+      - name: conformance-python
+        run: make conformance-python
+
+  typescript:
+    name: TypeScript conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: conformance-ts
+        run: make conformance-ts
+      - name: typecheck (ts/NOTES.md)
+        run: npx --yes -p typescript@7.0.2 tsc -p ts --noEmit
+
+  hub-mutate:
+    name: Hub guard mutation battery
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go/hub/go.sum
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: hub-mutate
+        run: make hub-mutate
+
+  smoke:
+    name: Smoke test (TypeScript client against a local hub)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go/hub/go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: smoke-local
+        run: make smoke-local
