@@ -2,8 +2,11 @@
 # Runs the Go, Python and TypeScript snippets from README.md's "Try it in 30
 # seconds" section, extracted from the README itself, against a throwaway local
 # hub on 127.0.0.1:8080 (the address the snippets use). Each snippet must exit
-# 0, print an m_ id, and leave its handle resolvable. The Go snippet builds
-# against this checkout (a replace), not the published module.
+# 0, print an m_ id, and leave its handle resolvable. Then the read-a-channel
+# snippet (the second ```ts block) runs against a #llm-papers channel that
+# scripts/readme-seed.ts fills with 205 posts, and must print exactly the 3
+# newest. The Go snippet builds against this checkout (a replace), not the
+# published module.
 # Needs Go, Node 24 and Python 3 with `cryptography`.
 set -euo pipefail
 
@@ -22,21 +25,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# extract LANG OUT: the single ```LANG block in the section; fails unless exactly one.
+# extract LANG WANT IDX OUT: the IDX-th ```LANG block in the section; fails
+# unless the section has exactly WANT of them.
 extract() {
-  awk -v lang="$1" '
+  awk -v lang="$1" -v want="$2" -v idx="$3" '
     /^## / { insec = ($0 == "## Try it in 30 seconds") }
     insec && !inblk && $0 == "```" lang { inblk = 1; n++; next }
     inblk && $0 == "```" { inblk = 0; next }
-    inblk { print }
-    END { if (n != 1) { print "want exactly one ```" lang " block in the section, found " n > "/dev/stderr"; exit 1 } }
-  ' "$root/README.md" > "$2"
+    inblk && n == idx { print }
+    END { if (n != want) { print "want " want " ```" lang " block(s) in the section, found " n > "/dev/stderr"; exit 1 } }
+  ' "$root/README.md" > "$4"
 }
 
 mkdir -p "$tmp/go" "$tmp/ts"
-extract go "$tmp/go/main.go"
-extract python "$tmp/demo.py"
-extract ts "$tmp/ts/demo.ts"
+extract go 1 1 "$tmp/go/main.go"
+extract python 1 1 "$tmp/demo.py"
+extract ts 2 1 "$tmp/ts/demo.ts"
+extract ts 2 2 "$tmp/ts/read.ts"
 
 # The snippets' own setup steps, done against this checkout.
 (CDPATH= cd -- "$tmp/go" && go mod init demo >/dev/null 2>&1 \
@@ -87,6 +92,23 @@ check() { # name handle command...
 check go go-demo go -C "$tmp/go" run .
 check python py-demo env PYTHONPATH="$root/python" "$PYTHON" "$tmp/demo.py"
 check ts ts-demo "$NODE" --no-warnings "$tmp/ts/demo.ts"
+
+# Read-a-channel: seed after the write snippets, then the output must be the 3
+# newest posts, oldest of them first, each line "<ISO time> <k_ author> <text>".
+if ! seed_out=$(timeout 120 "$NODE" --no-warnings "$root/scripts/readme-seed.ts" http://127.0.0.1:8080 2>&1); then
+  echo "FAIL read: seeding failed:"; echo "$seed_out"; fails=$((fails + 1))
+elif ! out=$(timeout 120 "$NODE" --no-warnings "$tmp/ts/read.ts" 2>&1); then
+  echo "FAIL read: exited non-zero:"; echo "$out"; fails=$((fails + 1))
+else
+  got=$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z k_[a-z2-7]{52} //' <<<"$out")
+  want=$'"seed post 203"\n"seed post 204"\n"seed post 205"'
+  if [[ $got != "$want" ]]; then
+    echo "FAIL read: want the 3 newest posts as \"<time> <k_ author> <text>\" lines, got:"; echo "$out"
+    fails=$((fails + 1))
+  else
+    echo "ok read"
+  fi
+fi
 
 if (( fails )); then
   echo "--- hub log ---" >&2

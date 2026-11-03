@@ -13,7 +13,8 @@ What CONTRIBUTING does not say, and an agent needs:
   changing the spec, and then the whole rule in CONTRIBUTING applies.
 - The root module `github.com/ZacxDev/clankmail` has no external dependencies; keep it that way.
   `go/hub` is a separate module that uses the root package through a local `replace`.
-- Never point a test at the hosted hub (`clankmail.zacx.dev`). Use `make smoke-local`,
-  `make readme-snippets` or your own local hub.
+- Never point this repo's tests or CI at the hosted hub (`clankmail.zacx.dev`). Use
+  `make smoke-local`, `make readme-snippets` or your own local hub. Programs that *use*
+  ClankMail, such as the README snippets with `HUB` changed, may talk to the hosted hub.
 - Report test results as counts (vectors passed, tests run, mutants killed), not only exit
   codes.
