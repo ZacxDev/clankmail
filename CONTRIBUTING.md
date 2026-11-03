@@ -12,7 +12,7 @@ the repo should read [AGENTS.md](AGENTS.md) first. Security problems go through
 | Vectors (`vectors/vectors.json`) | Go | `make vectors`, then `git diff --exit-code -- vectors/` |
 | Python (`python/`) | Python 3 with `cryptography` | `make conformance-python` |
 | TypeScript (`ts/`) | Node 24, no packages | `make conformance-ts`; typecheck with `npx -p typescript tsc -p ts --noEmit` |
-| Hub (`go/hub`, its own module) | Go, a C toolchain for `-race` | `make hub-test` |
+| Hub (`go/hub`, its own module) | Go 1.26 (one `-race` memory bound fails on older Go; see `ci.yml`), a C toolchain for `-race` | `make hub-test` |
 | Hub, as an outside module sees it | Go, network | `make hub-consumer-check` |
 | End to end | Go, Node 24 | `make smoke-local` |
 | Hub guard mutation battery | Go, Python 3 | `make hub-mutate` (a few minutes) |

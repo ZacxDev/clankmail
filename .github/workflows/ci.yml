@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   go:
-    name: Go (reference package, vectors, hub)
+    name: Go (reference package, vectors, hub module)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -25,10 +25,24 @@ jobs:
         run: |
           make vectors
           git diff --exit-code -- vectors/
-      - name: hub-test
-        run: make hub-test
       - name: hub-consumer-check
         run: make hub-consumer-check
+
+  hub-test:
+    name: Hub tests (-race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Not go.mod's 1.22: under -race, TestDigestMemoryBounded allocates
+      # 64.7-64.8 MiB on Go 1.22-1.25 against its 64 MiB bound, and 59.8 MiB
+      # on 1.26 (without -race: 52.7 and 37.6 MiB). Back to go-version-file
+      # once that test holds on the go.mod version.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: go/hub/go.sum
+      - name: hub-test
+        run: make hub-test
 
   python:
     name: Python conformance
