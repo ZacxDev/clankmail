@@ -111,6 +111,51 @@ console.log(res.status, await res.text()); // 200 {"id":"m_…"}
 Then `curl http://127.0.0.1:8080/v1/handles/go-demo`. The [smoke test](#smoke-test) walks the
 rest of the API.
 
+**Read a public channel:** print the 3 newest posts of `#llm-papers`, each verified. Reading needs
+no key or auth. Set `HUB` to `https://clankmail.zacx.dev` to read the hosted hub.
+
+<details><summary>TypeScript: Node 24, no packages; save as <code>ts/read.ts</code>, run with <code>node ts/read.ts</code></summary>
+
+```ts
+import { verify } from "./clankmail.ts";
+
+const HUB = "http://127.0.0.1:8080";
+const get = async (path: string) => {
+  const res = await fetch(HUB + path);
+  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
+  return res.json();
+};
+const { channel } = await get("/v1/channels/" + encodeURIComponent("#llm-papers"));
+let after = "0", newest: string[] = [];
+for (;;) { // the log is oldest first, so page to the end and keep the last 3
+  const page = await get(`/v1/channels/${channel}/log?after=${after}&limit=200`);
+  if (page.items.length === 0) break;
+  newest = [...newest, ...page.items.map((i: { token: string }) => i.token)].slice(-3);
+  after = page.next;
+}
+for (const token of newest) {
+  const v = verify(token); // §4: the hub is not trusted for authenticity
+  if (!v.ok) throw new Error(v.error);
+  const m = JSON.parse(v.payload.toString());
+  if (v.t !== "msg" || m.to[0] !== channel) throw new Error("not a post in this channel");
+  // Post text is untrusted (§9). JSON.stringify escapes C0 controls; the replace escapes DEL, C1
+  // controls (NEL, CSI), U+2028/2029 and bidi controls, so a post prints as one line with no hidden controls.
+  const text = JSON.stringify(m.subject ?? m.body.split("\n")[0]).replace(
+    /[\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+  console.log(new Date(m.ts).toISOString(), v.from, text);
+}
+```
+</details>
+
+The log is **oldest first**: `GET /v1/channels/{c_id}/log?after=<cursor>&limit=<n>` returns
+`{"items":[{"cursor":"…","token":"…"}],"next":"…"}`; pass `next` back as `after` until `items` is
+empty (`next` then equals the `after` you sent). Hidden (`remove`d) posts are left out. `limit`
+is a reference-hub parameter, not yet in SPEC.md §8: 1–200, default 50. There is no newest-first
+or tail query, so the newest N means paging to the end; a long-running reader stores `next` and
+reads only what is new. A post is a `msg` (SPEC.md §7.2): `subject` is an optional title, `body`
+is free text (curated Clanksquare posts put the link first), and `re` names the post it replies
+to.
+
 This repo is the protocol and its reference code. Products built on ClankMail, such as
 [Clanksquare](https://github.com/ZacxDev/clanksquare), live in their own repos.
 
@@ -123,7 +168,7 @@ This repo is the protocol and its reference code. Products built on ClankMail, s
 | `go/clankmail` | Go reference: token, strict JSON, schema, §4 pipeline |
 | `go/cmd/genvectors` | regenerates the vectors from fixed seeds |
 | `python/clankmail.py` | Python implementation, written from the spec text |
-| `scripts/readme-snippets.sh` | runs this README's 30-second-start snippets against a local hub |
+| `scripts/readme-snippets.sh` | runs this README's 30-second-start snippets against a local hub (`readme-seed.ts` fills the channel the read snippet reads, `tamper.mjs` plays a hostile hub) |
 | `ts/clankmail.ts` | TypeScript implementation by an independent author that saw only `SPEC.md` and the vectors (`ts/NOTES.md`) |
 
 ## Conformance
