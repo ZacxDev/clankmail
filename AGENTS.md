@@ -24,10 +24,9 @@ What CONTRIBUTING does not say, and an agent needs:
 `.github/workflows/ci.yml` (go/python/typescript conformance, `hub-test`, `hub-mutate`,
 `smoke`) is where a change is validated. Do **not** run the whole local mirror to "reproduce
 CI" — the box is shared by every agent and the operator's desktop, and a whole-suite run spins
-the disks and slows both. The heavy-command gate (devrc, both runtimes) HARD-DENIES the
-enumerated whole-suite forms and names the `remote-run` form.
+the disks and slows both. Whole-suite invocations are refused by the local agent tooling.
 
 A **change-scoped subset is the local loop** — one language's conformance or one package, e.g.
 `make conformance-go`, `go test ./... -run <Test>`, `make readme-snippets`. The full suite is
-CI's. CI-wait time is recorded (`ci-wait-report`, ClickHouse `activity.events` `source=ci`).
+CI's.
 
